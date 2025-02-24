@@ -1,5 +1,4 @@
 🎯**Reuseable Gaze Representation Learning from Videos**
-Master Thesis - KU Leuven, Groep T Campus  
 **Authors:** Rohan Bhattaram & Datao Liang  
 **Promoter:** Bace Mihai  
 **Supervisor:** Alexandre Personnic  
