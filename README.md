@@ -1,4 +1,4 @@
-🎯**Reuseable Gaze Representation Learning from Videos**
+## 🎯**Reuseable Gaze Representation Learning from Videos**
 
 
 **Authors:** Rohan Bhattaram & Datao Liang  
