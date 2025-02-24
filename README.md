@@ -1,11 +1,11 @@
-## 🎯**Reuseable Gaze Representation Learning from Videos**
+# 🎯**Reuseable Gaze Representation Learning from Videos**
 
 
 **Authors:** Rohan Bhattaram & Datao Liang  
 **Promoter:** Bace Mihai  
 **Supervisor:** Alexandre Personnic  
 
-📌 **Overview**  
+## 📌 **Overview**  
 This project focuses on learning **reusable gaze representations** from video data using **deep learning models**. Our goal is to develop a **generalizable gaze estimation model** that works across different tasks, such as **biometrics, human-computer interaction, and medical diagnostics**.
 
 Our model integrates:  
@@ -15,13 +15,13 @@ Our model integrates:
   -  **Global Average Pooling (GAP)** to prevent overfitting  
   - **GRU (Gated Recurrent Units)** for capturing **temporal gaze dependencies**  
 
-📂 Dataset  
+## 📂 Dataset  
 We use the **EVE Dataset** for training, which includes:  
   - **Multi-view gaze recordings** from different screen setups  
   - **Eye, face, and screen data** as separate inputs  
   - **Head position (x, y, z), head orientation (yaw, pitch, roll), and gaze direction vectors**  
 
-🏗️ Model Architecture  
+## 🏗️ Model Architecture  
   - **Feature Extraction (ResNet)**: Extracts spatial features from **eye, face, and screen data**.  
   - **Feature Fusion & Normalization (AdaGN)**: Ensures balanced feature contributions.  
   - **Attention Mechanisms (Channel & Self-Attention)**: Learns feature importance and spatial dependencies.  
