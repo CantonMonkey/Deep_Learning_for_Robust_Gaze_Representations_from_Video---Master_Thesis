@@ -1,7 +1,7 @@
 # 🎯**Reuseable Gaze Representation Learning from Videos**
 
 
-**Authors:** Rohan Bhattaram & Datao Liang  
+**Authors:** Datao Liang & Rohan Bhattaram
 **Promoter:** Bace Mihai  
 **Supervisor:** Alexandre Personnic  
 
