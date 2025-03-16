@@ -54,8 +54,8 @@ class FeatureFusion(torch.nn.Module):
         # self.concate = torch.cat((x, x, x), 0) // not needed here, only in forward
         # total_ch = Leye[1]+Reye[1]+FaceData[1]  # total channels of the input // this is not working 
         concate = torch.cat((left_eye, right_eye, face), 1)  # dim = 0 or 1?  only channel dim changes?
-        self.out = self.gn(concate)
-        return self.out
+        out = self.gn(concate)
+        return out
 
 # from vit_pytorch import ViT
 # https://github.com/lucidrains/vit-pytorch/blob/main/vit_pytorch/vit.py
@@ -76,27 +76,15 @@ class Attention(torch.nn.Module):
                 
         )
 
-        # RNN layer for temporal information
-        # https://pytorch.org/docs/stable/generated/torch.nn.GRU.html
-        # torch.nn.GRU(input_size, hidden_size, num_layers=1, bias=True, batch_first=False, dropout=0.0, bidirectional=False, device=None, dtype=None)
-        # how to define the input_size and hidden_size?
-        # test num_layers param, what does it affect?
-        self.rnn = torch.nn.GRU(total_ch, 512, num_layers=1, bias=True, batch_first=False, dropout=0.0, bidirectional=False, device=None, dtype=None)
 
-    def forward(self, left_eye, right_eye, face):
-
+    def forward(self):
         bs, c, h, w = self.out.shape
         x_att = self.out.reshape(bs, c, h * w).transpose(1, 2)   # (bs, h*w, c) --- (bs, seq_len, features)
         x_att = self.self_att(x_att)  # output shape (bs, h*w, c)
 
-
-        # h_n itself should be an input for GRU, otherwise useless, dont forget the hidden state
-        self.out, h_n = self.rnn(x_att, h_state) # read the source, there are 2 outputs, but what is h_n here? should be the hidden state of the last layer?
-        # mind the coherence of the input and output of the RNN layer 
-        
         #reshape the output
         # for input frames, the temporal information should be considered, how to define the input_size and hidden_size?
-        return self.out
+        return x_att
         
 
         # set learning rate for diff layers
@@ -115,12 +103,12 @@ class Temporal(torch.nn.Module):
 
     def forward(self, x_att, h_state):
         # h_n itself should be an input for GRU, otherwise useless, dont forget the hidden state
-        self.out, h_n = self.rnn(x_att, h_state) # read the source, there are 2 outputs, but what is h_n here? should be the hidden state of the last layer?
+        out, h_n = self.rnn(x_att, h_state) # read the source, there are 2 outputs, but what is h_n here? should be the hidden state of the last layer?
         # mind the coherence of the input and output of the RNN layer 
         
         #reshape the output
         # for input frames, the temporal information should be considered, how to define the input_size and hidden_size?
-        return self.out
+        return out, h_n
         
 
         # set learning rate for diff layers
