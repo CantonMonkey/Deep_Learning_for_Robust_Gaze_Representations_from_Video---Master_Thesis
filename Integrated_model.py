@@ -41,47 +41,30 @@ transform = transforms.Compose([ # pre processing the images to match the resnet
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # normalization of the pixel values
 ])
 
-def extract_features(image_path):
-    img = Image.open(image_path).convert("RGB") 
-    img = transform(img).unsqueeze(0) # apply the transformations, batch size is set to 1
-    # with torch.no_grad():
-    features = feature_extractor(img)  
-    
-    return features
 
+
+class FeatureFusion(torch.nn.Module):
+    def __init__(self, total_ch = 384):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
+        super(FeatureFusion, self).__init__()
+        # total_ch = 384
+        self.gn = torch.nn.GroupNorm(3, total_ch)     # Separate 6 channels into 3 groups, how to define a appropriate number of groups & channels?
+    def forward(self, left_eye, right_eye, face):
+        # layer2
+        # layer 2: feature fusion: concate + group  normalization
+        # self.concate = torch.cat((x, x, x), 0) // not needed here, only in forward
+        # total_ch = Leye[1]+Reye[1]+FaceData[1]  # total channels of the input // this is not working 
+        concate = torch.cat((left_eye, right_eye, face), 1)  # dim = 0 or 1?  only channel dim changes?
+        self.out = self.gn(concate)
+        return self.out
 
 # from vit_pytorch import ViT
 # https://github.com/lucidrains/vit-pytorch/blob/main/vit_pytorch/vit.py
 from vit_pytorch.vit import Transformer
 
 
-class layer23(torch.nn.Module):
-    def __init__(self, gaze_dims=3):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
-        super(TinyModel, self).__init__()
-        # layer 1: feature extraction (to be implemented)
-        
-        
-        # layer 2: feature fusion: concate + group  normalization
-        # self.concate = torch.cat((x, x, x), 0) // not needed here, only in forward
-        # total_ch = Leye[1]+Reye[1]+FaceData[1]  # total channels of the input // this is not working 
-        total_ch = 384
-        self.gn = torch.nn.GroupNorm(3, total_ch)     # Separate 6 channels into 3 groups, how to define a appropriate number of groups & channels?
-        
-        # layer 3:self-attention
-        ########################################## should be replaced with the Attention class, not the whole ViT ##########################################
-        # self.vit = ViT(
-        #         image_size = 8,
-        #         patch_size = 2,
-        #         num_classes = gaze_dims,  # for instance 3 gaze dims, PoG (x,y,z)
-        #         dim = 1024,
-        #         depth = 6,
-        #         heads = 16,
-        #         mlp_dim = 2048,
-        #         channels= total_ch,
-        #         dropout = 0.1,
-        #         emb_dropout = 0.1)
-        #####################################################################################################################################################
-
+class Attention(torch.nn.Module):
+    def __init__(self, total_ch = 384):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
+        super(Attention, self).__init__()
         self.self_att = Transformer(
                 dim = total_ch,   # if not using the total_ch, should project the input to the dim of the transformer first
                 depth = 6,
@@ -93,7 +76,6 @@ class layer23(torch.nn.Module):
                 
         )
 
- 
         # RNN layer for temporal information
         # https://pytorch.org/docs/stable/generated/torch.nn.GRU.html
         # torch.nn.GRU(input_size, hidden_size, num_layers=1, bias=True, batch_first=False, dropout=0.0, bidirectional=False, device=None, dtype=None)
@@ -103,32 +85,48 @@ class layer23(torch.nn.Module):
 
     def forward(self, left_eye, right_eye, face):
 
-        # layer2
-        concate = torch.cat((left_eye, right_eye, face), 1)  # dim = 0 or 1?  only channel dim changes?
-        out = self.gn(concate)
-        bs, c, h, w = out.shape
-        x_att = out.reshape(bs, c, h * w).transpose(1, 2)   # (bs, h*w, c) --- (bs, seq_len, features)
+        bs, c, h, w = self.out.shape
+        x_att = self.out.reshape(bs, c, h * w).transpose(1, 2)   # (bs, h*w, c) --- (bs, seq_len, features)
         x_att = self.self_att(x_att)  # output shape (bs, h*w, c)
+
+
         # h_n itself should be an input for GRU, otherwise useless, dont forget the hidden state
-        out, h_n = self.rnn(x_att, h_state) # read the source, there are 2 outputs, but what is h_n here? should be the hidden state of the last layer?
+        self.out, h_n = self.rnn(x_att, h_state) # read the source, there are 2 outputs, but what is h_n here? should be the hidden state of the last layer?
         # mind the coherence of the input and output of the RNN layer 
         
         #reshape the output
-
-
-
-
         # for input frames, the temporal information should be considered, how to define the input_size and hidden_size?
-        return out
+        return self.out
         
 
         # set learning rate for diff layers
      
 
 
-    ## If there is overfitting we can switch to 2D Convolutional network, https://github.com/swook/EVE/blob/master/DATASET.md for dataset information
-inp = torch.rand(1, 384, 1, 1)
-print(inp)
+class Temporal(torch.nn.Module):
+    def __init__(self, total_ch = 384):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
+        super(Temporal, self).__init__()
+        # RNN layer for temporal information
+        # https://pytorch.org/docs/stable/generated/torch.nn.GRU.html
+        # torch.nn.GRU(input_size, hidden_size, num_layers=1, bias=True, batch_first=False, dropout=0.0, bidirectional=False, device=None, dtype=None)
+        # how to define the input_size and hidden_size?
+        # test num_layers param, what does it affect?
+        self.rnn = torch.nn.GRU(total_ch, 512, num_layers=1, bias=True, batch_first=False, dropout=0.0, bidirectional=False, device=None, dtype=None)
+
+    def forward(self, x_att, h_state):
+        # h_n itself should be an input for GRU, otherwise useless, dont forget the hidden state
+        self.out, h_n = self.rnn(x_att, h_state) # read the source, there are 2 outputs, but what is h_n here? should be the hidden state of the last layer?
+        # mind the coherence of the input and output of the RNN layer 
+        
+        #reshape the output
+        # for input frames, the temporal information should be considered, how to define the input_size and hidden_size?
+        return self.out
+        
+
+        # set learning rate for diff layers
+
+
+
 
 class GazePrediction(nn.Module):
     def __init__(self):
@@ -140,34 +138,3 @@ class GazePrediction(nn.Module):
         x = self.fc(x) 
         return x
 
-
-gaze_model = GazePrediction()
-
-gaze_vector = gaze_model(inp)
-
-model = TinyModel(gaze_dims=3)
-print(model)
-
-output = model(Leye, Reye, FaceData)  # currently the face Data is not matched with eyes, should be matched in the future, how to match? linear padding or other methods? would it affect the performance if change the size of facedata
-print("output:",output.shape)
-# testing only forward pass, not backward pass
-
-
-
-
-
-dataset_path = "./Test Dataset/Output/"
-
-left_eye_img = os.path.join(dataset_path, "webcam_r/left_eye/left_eye_0000.jpg")
-right_eye_img = os.path.join(dataset_path, "webcam_r/right_eye/right_eye_0000.jpg")
-face_img = os.path.join(dataset_path, "webcam_r/face/face_0000.jpg")
-
-
-left_eye_features = extract_features(left_eye_img)  
-right_eye_features = extract_features(right_eye_img)  
-face_features = extract_features(face_img) 
-
-
-print(left_eye_features.shape)
-print(right_eye_features.shape)
-print(face_features.shape)
