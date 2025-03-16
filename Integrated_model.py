@@ -119,7 +119,7 @@ class GazePrediction(nn.Module):
 
 
 class WholeModel(nn.Module):
-    def __init__(self):
+    def __init__(self, ):
         super(WholeModel, self).__init__()
         self.layers= (nn.ModuleList([
                 ResNetFeatureExtractor(),
@@ -128,11 +128,24 @@ class WholeModel(nn.Module):
                 Temporal(),
                 GazePrediction()
             ]))
+        
+        # self.left_eye = self.layers[0]
+        # self.right_eye = self.layers[0]
+        # self.face = self.layers[0]
+        
 
-    def forward(self, x):
-        x = self.layers[0](x)
-        x = self.layers[1](x)
-        x = self.layers[2](x)
-        x = self.layers[3](x)
-        x = self.layers[4](x)
+    def forward(self, left_eye, right_eye, face):
+        # calculate 3 input features in parallel
+        left_eye = self.layers[0](left_eye)
+        right_eye = self.layers[0](right_eye)
+        face = self.layers[0](face)
+        ##################################
+
+        fusioned_feature = self.layers[1](left_eye, right_eye, face)
+
+        Attention_map = self.layers[2](fusioned_feature)
+
+        rnn_out, h_n = self.layers[3](Attention_map, h_n)
+        x = self.layers[4](rnn_out)
         return x
+
