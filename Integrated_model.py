@@ -146,6 +146,6 @@ class WholeModel(nn.Module):
         Attention_map = self.layers[2](fusioned_feature)
 
         rnn_out, h_n = self.layers[3](Attention_map, h_n)
-        x = self.layers[4](rnn_out)
-        return x
+        pred = self.layers[4](rnn_out)
+        return pred
 
