@@ -7,8 +7,7 @@ import torch
 import torch.nn as nn
 import torchvision.models as models
 import torchvision.transforms as transforms
-from PIL import Image
-import os
+
 # https://flypix.ai/blog/image-recognition-algorithms/ why I choosed only first few layers for feature extraction, upto middle layers are sufficient to provide information about eyes
 # In higher layers of the network, detailed pixel information is lost whilethe high level content of the image is preserved. Clear Explanation is here(https://ai.stackexchange.com/questions/30038/why-do-we-lose-detail-of-an-image-as-we-go-deeper-into-a-convnet)
 class ResNetFeatureExtractor(nn.Module):
@@ -25,21 +24,12 @@ class ResNetFeatureExtractor(nn.Module):
 
         self.reduce_channels = nn.Conv2d(256, 128, kernel_size=1) # kernel_size 1 only changes the number of channels and doesn't mess with the spatial size
 
-        #layer 2:
 
     def forward(self, x):
         x = self.feature_extractor(x)  
         x = self.reduce_channels(x)   
         return x
 
-feature_extractor = ResNetFeatureExtractor()
-feature_extractor.eval()  
-
-transform = transforms.Compose([ # pre processing the images to match the resnet's training statistics
-    transforms.Resize((128, 128)), 
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # normalization of the pixel values
-])
 
 
 
@@ -77,9 +67,9 @@ class Attention(torch.nn.Module):
         )
 
 
-    def forward(self):
-        bs, c, h, w = self.out.shape
-        x_att = self.out.reshape(bs, c, h * w).transpose(1, 2)   # (bs, h*w, c) --- (bs, seq_len, features)
+    def forward(self, out):
+        bs, c, h, w = out.shape
+        x_att = out.reshape(bs, c, h * w).transpose(1, 2)   # (bs, h*w, c) --- (bs, seq_len, features)
         x_att = self.self_att(x_att)  # output shape (bs, h*w, c)
 
         #reshape the output
@@ -115,7 +105,6 @@ class Temporal(torch.nn.Module):
 
 
 
-
 class GazePrediction(nn.Module):
     def __init__(self):
         super(GazePrediction, self).__init__()
@@ -126,3 +115,24 @@ class GazePrediction(nn.Module):
         x = self.fc(x) 
         return x
 
+
+
+
+class WholeModel(nn.Module):
+    def __init__(self):
+        super(WholeModel, self).__init__()
+        self.layers= (nn.ModuleList([
+                ResNetFeatureExtractor(),
+                FeatureFusion(),
+                Attention(),
+                Temporal(),
+                GazePrediction()
+            ]))
+
+    def forward(self, x):
+        x = self.layers[0](x)
+        x = self.layers[1](x)
+        x = self.layers[2](x)
+        x = self.layers[3](x)
+        x = self.layers[4](x)
+        return x
