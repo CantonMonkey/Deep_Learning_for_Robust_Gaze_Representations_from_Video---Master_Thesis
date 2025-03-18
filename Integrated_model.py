@@ -93,8 +93,17 @@ class Temporal(torch.nn.Module):
         # how to define the input_size and hidden_size?
         # test num_layers param, what does it affect?
         self.rnn = torch.nn.GRU(total_ch, 512, num_layers=1, bias=True, batch_first=False, dropout=0.0, bidirectional=False, device=None, dtype=None)
+        # input of GRU:
+        # :math:`(L, N, H_{in})` when ``batch_first=False`` or
+        #   :math:`(N, L, H_{in})` when ``batch_first=True``
+        # for the output of transformer, the h*w represents the seq_length, and the total_ch represents the features (which is H_{in} or input size)
+        # output of transformer : (ba, h*w, ch), should be reshaped to (seq_len, bs, features) for GRU, which is (h*w, bs, total_ch)
+        # the transformation is done in the Class "WholeModel"
+    
+        
 
-    def forward(self, x_att, h_state):
+    def forward(self, x_att, h_state=None):
+        print("Temporal", x_att.shape, h_state)
         # h_n itself should be an input for GRU, otherwise useless, dont forget the hidden state
         out, h_n = self.rnn(x_att, h_state) # read the source, there are 2 outputs, but what is h_n here? should be the hidden state of the last layer?
         # mind the coherence of the input and output of the RNN layer 
@@ -151,7 +160,11 @@ class WholeModel(nn.Module):
 
         Attention_map = self.layers[2](fusioned_feature)
 
-        rnn_out, h_n = self.layers[3](Attention_map, h_n)
+        bs, seq_len, ch = Attention_map.shape
+        Attention_map = Attention_map.reshape(seq_len, bs, ch)
+
+        rnn_out, h_n = self.layers[3](Attention_map)
+        # so, I think multiple GRU blocks are needed
         pred = self.layers[4](rnn_out)
         print("WholeModel", pred.shape)
         return pred
