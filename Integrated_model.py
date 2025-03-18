@@ -92,7 +92,15 @@ class Temporal(torch.nn.Module):
         # torch.nn.GRU(input_size, hidden_size, num_layers=1, bias=True, batch_first=False, dropout=0.0, bidirectional=False, device=None, dtype=None)
         # how to define the input_size and hidden_size?
         # test num_layers param, what does it affect?
-        self.rnn = torch.nn.GRU(total_ch, 512, num_layers=1, bias=True, batch_first=False, dropout=0.0, bidirectional=False, device=None, dtype=None)
+        self.rnn = torch.nn.GRU(input_size=total_ch, 
+                                hidden_size=512,    # the more hidden size, the complexer memory
+                                num_layers=5, 
+                                bias=True, 
+                                batch_first=False, 
+                                dropout=0.0, 
+                                bidirectional=False, 
+                                device=None, 
+                                dtype=None)
         # input of GRU:
         # :math:`(L, N, H_{in})` when ``batch_first=False`` or
         #   :math:`(N, L, H_{in})` when ``batch_first=True``
@@ -103,7 +111,7 @@ class Temporal(torch.nn.Module):
         
 
     def forward(self, x_att, h_state=None):
-        print("Temporal", x_att.shape, h_state)
+        print("Temporal_start", x_att.shape, h_state)
         # h_n itself should be an input for GRU, otherwise useless, dont forget the hidden state
         out, h_n = self.rnn(x_att, h_state) # read the source, there are 2 outputs, but what is h_n here? should be the hidden state of the last layer?
         # mind the coherence of the input and output of the RNN layer 
@@ -111,7 +119,8 @@ class Temporal(torch.nn.Module):
         #reshape the output
         # for input frames, the temporal information should be considered, how to define the input_size and hidden_size?
 
-        print("Temporal", out.shape)
+        print("Temporal out", out.shape)
+        print("Temporal h_n", h_n.shape)
         return out, h_n
         
 
@@ -125,6 +134,7 @@ class GazePrediction(nn.Module):
         self.fc = nn.Linear(384, 3)  
     
     def forward(self, x):
+        print ("enter FC layer")
         x = x.view(x.size(0), -1)  
         x = self.fc(x) 
         print("GazePrediction", x.shape)
@@ -164,7 +174,7 @@ class WholeModel(nn.Module):
         Attention_map = Attention_map.reshape(seq_len, bs, ch)
 
         rnn_out, h_n = self.layers[3](Attention_map)
-        # so, I think multiple GRU blocks are needed
+        # so, I think multiple GRU blocks are needed. Answer: No, just change the num_layers param in the GRU block
         pred = self.layers[4](rnn_out)
         print("WholeModel", pred.shape)
         return pred
