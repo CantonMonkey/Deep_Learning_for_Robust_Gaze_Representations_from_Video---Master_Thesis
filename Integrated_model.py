@@ -18,7 +18,6 @@ class ResNetFeatureExtractor(nn.Module):
 
         self.feature_extractor = nn.Sequential(*list(resnet.children())[:-3])
         
-        
         self.feature_extractor[-1][0].conv1.stride = (1, 1) # normally resnet has stride = 2 in layer 3 this will downsample from 8x8 to 4x4. This is to avoid this. More spatil features are preserved
         self.feature_extractor[-1][0].downsample[0].stride = (1, 1)
 
@@ -28,6 +27,7 @@ class ResNetFeatureExtractor(nn.Module):
     def forward(self, x):
         x = self.feature_extractor(x)  
         x = self.reduce_channels(x)   
+        print("ResNetFeatureExtractor", x.shape)
         return x
 
 
@@ -45,6 +45,7 @@ class FeatureFusion(torch.nn.Module):
         # total_ch = Leye[1]+Reye[1]+FaceData[1]  # total channels of the input // this is not working 
         concate = torch.cat((left_eye, right_eye, face), 1)  # dim = 0 or 1?  only channel dim changes?
         out = self.gn(concate)
+        print("FeatureFusion", out.shape)
         return out
 
 # from vit_pytorch import ViT
@@ -74,6 +75,8 @@ class Attention(torch.nn.Module):
 
         #reshape the output
         # for input frames, the temporal information should be considered, how to define the input_size and hidden_size?
+
+        print("Attention", x_att.shape)
         return x_att
         
 
@@ -98,6 +101,8 @@ class Temporal(torch.nn.Module):
         
         #reshape the output
         # for input frames, the temporal information should be considered, how to define the input_size and hidden_size?
+
+        print("Temporal", out.shape)
         return out, h_n
         
 
@@ -113,6 +118,7 @@ class GazePrediction(nn.Module):
     def forward(self, x):
         x = x.view(x.size(0), -1)  
         x = self.fc(x) 
+        print("GazePrediction", x.shape)
         return x
 
 
@@ -147,5 +153,6 @@ class WholeModel(nn.Module):
 
         rnn_out, h_n = self.layers[3](Attention_map, h_n)
         pred = self.layers[4](rnn_out)
+        print("WholeModel", pred.shape)
         return pred
 

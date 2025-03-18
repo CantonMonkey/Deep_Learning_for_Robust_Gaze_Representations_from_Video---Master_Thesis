@@ -7,9 +7,9 @@ def test():
 
     bs = 16 # batch size
 
-    Leye = torch.rand(bs,256, 16, 16)
-    Reye = torch.rand(bs,256, 16, 16)
-    FaceData = torch.rand(bs,256, 16, 16)  # currently matched with eyes......
+    Leye = torch.rand(bs,3, 16, 16)
+    Reye = torch.rand(bs,3, 16, 16)
+    FaceData = torch.rand(bs,3, 16, 16)  # currently matched with eyes......
 
     out = model(Leye, Reye, FaceData)
     print(out.shape())
