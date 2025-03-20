@@ -28,12 +28,17 @@ class ResNetFeatureExtractor(nn.Module):
         x = self.feature_extractor(x)  
         x = self.reduce_channels(x)   
         print("ResNetFeatureExtractor", x.shape)
-        return x
+        return x  # (bs, ch, h, w)
 
 
 
 
 class FeatureFusion(torch.nn.Module):
+    """
+    Feature Fusion Layer
+    input shape: (bs, ch, h, w)
+    output shape: (bs, ch, h, w)
+    """
     def __init__(self, total_ch = 384):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
         super(FeatureFusion, self).__init__()
         # total_ch = 384
@@ -46,7 +51,7 @@ class FeatureFusion(torch.nn.Module):
         concate = torch.cat((left_eye, right_eye, face), 1)  # dim = 0 or 1?  only channel dim changes?
         out = self.gn(concate)
         print("FeatureFusion", out.shape)
-        return out
+        return out 
 
 # from vit_pytorch import ViT
 # https://github.com/lucidrains/vit-pytorch/blob/main/vit_pytorch/vit.py
@@ -54,6 +59,12 @@ from vit_pytorch.vit import Transformer
 
 
 class Attention(torch.nn.Module):
+    """
+    Attention Layer
+    class input shape: (bs, ch, h, w)
+    in forward, reshape to (bs, h*w, ch)
+    output shape: (bs, h*w, ch)
+    """
     def __init__(self, total_ch = 384):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
         super(Attention, self).__init__()
         self.self_att = Transformer(
@@ -85,6 +96,12 @@ class Attention(torch.nn.Module):
 
 
 class Temporal(torch.nn.Module):
+    """
+    Temporal Layer
+    input shape: (bs, ch, h, w)
+    output shape: (seq_len, bs, ch)  # seq_len = h*w 
+    h_n shape: (num_layers, bs, hidden_size)
+    """
     def __init__(self, total_ch = 384):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
         super(Temporal, self).__init__()
         # RNN layer for temporal information
@@ -124,7 +141,8 @@ class Temporal(torch.nn.Module):
 
         print("Temporal out", out.shape)
         print("Temporal h_n", h_n.shape)
-        return out, h_n
+        return out, h_n   # okay one important thing is to use h_n or out for fc layer?
+        # answer: use out, since it contains the info of all "time steps" (or frame steps). However, h_n only contains the info of the last time step. 
         
 
         # set learning rate for diff layers
@@ -132,6 +150,12 @@ class Temporal(torch.nn.Module):
 
 
 class GazePrediction(nn.Module):
+    """
+    FC layer
+    input shape: (seq_len, bs, ch)  # output of GRU 
+    reshape input to ( bs, seq_len*ch)  # flatten the input
+    output shape: (bs, num_classes)  # output of the model
+    """
     def __init__(self, hidden_size, sequence_length, num_classes):
         super(GazePrediction, self).__init__()
         # do we need more linear layers and dense/dropout before label mapping?
@@ -140,8 +164,9 @@ class GazePrediction(nn.Module):
     
     def forward(self, x):
         print ("enter FC layer")
-        x = x.view(x.size(0), -1)   # why??
-        x = self.fc(x) 
+        x = x.view(x.size(0), -1)   # why??  # x.size represents the bs, and -1 will flatten the rest dims to 1D vector, it turns out to be (bs, features).)
+        # one question: for regression task, also use nn.Linear to map them to the output?
+        x = self.fc(x)              # after conventing to 1D vector, the output of the fc layer is (bs, num_classes) 
         print("GazePrediction", x.shape)
         return x
 
@@ -182,7 +207,14 @@ class WholeModel(nn.Module):
 
         gru_out, _ = self.layers[3](Attention_map)  # h_n is not needed for FC layer, or it can be used if other tequniques are used 
         # so, I think multiple GRU blocks are needed. Answer: No, just change the num_layers param in the GRU block
-        gru_out = gru_out.reshape(gru_out.shape[0], -1) ##https://www.kaggle.com/code/fanbyprinciple/learning-pytorch-3-coding-an-rnn-gru-lstm
+        # gru_out = gru_out.reshape(gru_out.shape[0], -1) ##https://www.kaggle.com/code/fanbyprinciple/learning-pytorch-3-coding-an-rnn-gru-lstm # alredy done in the FC class
+
+        # reshape the output of GRU to (bs, seq_len, hidden_size)
+        # seq_len, bs, ch = gru_out.shape
+        # gru_out = gru_out.reshape(bs, seq_len, ch)  # (bs, seq_len*hidden_size)
+        gru_out = gru_out.reshape(gru_out.shape[0], -1)   
+        print("gru_out", gru_out.shape)
+
         pred = self.layers[4](gru_out)
         print("WholeModel", pred.shape)
         return pred

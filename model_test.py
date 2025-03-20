@@ -15,7 +15,7 @@ def test():
     FaceData = torch.rand(bs,3, 16, 16)  # currently matched with eyes......
 
     out = model(Leye, Reye, FaceData)
-    print(out.shape())
+    print(out.shape)
 
 
 if __name__ == "__main__":
