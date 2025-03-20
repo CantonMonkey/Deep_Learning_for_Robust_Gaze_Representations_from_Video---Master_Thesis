@@ -92,15 +92,18 @@ class Temporal(torch.nn.Module):
         # torch.nn.GRU(input_size, hidden_size, num_layers=1, bias=True, batch_first=False, dropout=0.0, bidirectional=False, device=None, dtype=None)
         # how to define the input_size and hidden_size?
         # test num_layers param, what does it affect?
-        self.rnn = torch.nn.GRU(input_size=total_ch, 
+        self.gru = torch.nn.GRU(input_size=total_ch, 
                                 hidden_size=512,    # the more hidden size, the complexer memory
-                                num_layers=5, 
+                                num_layers=5,       # does this represent the number of GRU blocks? or say the number of consecutive frames we wanna consider?
                                 bias=True, 
                                 batch_first=False, 
                                 dropout=0.0, 
                                 bidirectional=False, 
                                 device=None, 
                                 dtype=None)
+        
+        # do the params need to be defined in constructor?
+
         # input of GRU:
         # :math:`(L, N, H_{in})` when ``batch_first=False`` or
         #   :math:`(N, L, H_{in})` when ``batch_first=True``
@@ -113,7 +116,7 @@ class Temporal(torch.nn.Module):
     def forward(self, x_att, h_state=None):
         print("Temporal_start", x_att.shape, h_state)
         # h_n itself should be an input for GRU, otherwise useless, dont forget the hidden state
-        out, h_n = self.rnn(x_att, h_state) # read the source, there are 2 outputs, but what is h_n here? should be the hidden state of the last layer?
+        out, h_n = self.gru(x_att, h_state) # read the source, there are 2 outputs, but what is h_n here? should be the hidden state of the last layer?
         # mind the coherence of the input and output of the RNN layer 
         
         #reshape the output
@@ -129,13 +132,15 @@ class Temporal(torch.nn.Module):
 
 
 class GazePrediction(nn.Module):
-    def __init__(self):
+    def __init__(self, hidden_size, sequence_length, num_classes):
         super(GazePrediction, self).__init__()
-        self.fc = nn.Linear(384, 3)  
+        # do we need more linear layers and dense/dropout before label mapping?
+        self.fc = nn.Linear(hidden_size * sequence_length, num_classes)  #https://www.kaggle.com/code/fanbyprinciple/learning-pytorch-3-coding-an-rnn-gru-lstm
+        # self.fc = nn.Linear(384, 3)   # I suppose it should be mapped the output of the GRU to the h_n.
     
     def forward(self, x):
         print ("enter FC layer")
-        x = x.view(x.size(0), -1)  
+        x = x.view(x.size(0), -1)   # why??
         x = self.fc(x) 
         print("GazePrediction", x.shape)
         return x
@@ -144,14 +149,16 @@ class GazePrediction(nn.Module):
 
 
 class WholeModel(nn.Module):
-    def __init__(self, ):
+    def __init__(self):
         super(WholeModel, self).__init__()
         self.layers= (nn.ModuleList([
                 ResNetFeatureExtractor(),
                 FeatureFusion(),
                 Attention(),
                 Temporal(),
-                GazePrediction()
+                GazePrediction(hidden_size=512, sequence_length=16, num_classes=3)  # why sequence_length = 64? h*w*bs, yes indeed :)
+                # RuntimeError: mat1 and mat2 shapes cannot be multiplied (4x8192 and 32768x3) from 8192/512=16 I know seq_len = 16, but why?
+                # answer: read the source code of GRU, the output of GRU is (seq_len, bs, hidden_size), so the input of FC layer should be (bs, seq_len*hidden_size)
             ]))
         
         # self.left_eye = self.layers[0]
@@ -173,9 +180,10 @@ class WholeModel(nn.Module):
         bs, seq_len, ch = Attention_map.shape
         Attention_map = Attention_map.reshape(seq_len, bs, ch)
 
-        rnn_out, h_n = self.layers[3](Attention_map)
+        gru_out, _ = self.layers[3](Attention_map)  # h_n is not needed for FC layer, or it can be used if other tequniques are used 
         # so, I think multiple GRU blocks are needed. Answer: No, just change the num_layers param in the GRU block
-        pred = self.layers[4](rnn_out)
+        gru_out = gru_out.reshape(gru_out.shape[0], -1) ##https://www.kaggle.com/code/fanbyprinciple/learning-pytorch-3-coding-an-rnn-gru-lstm
+        pred = self.layers[4](gru_out)
         print("WholeModel", pred.shape)
         return pred
 
