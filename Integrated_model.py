@@ -1,20 +1,20 @@
-
-
-
 ## layer 1, understand strides and kernel_size concepts, we do not freeze the layers i think? maybe if there is overfitting we can freeze resnet for less training parameters
 # TODO: Ask about copying codes from documentation
 import torch
 import torch.nn as nn
 import torchvision.models as models
 import torchvision.transforms as transforms
-
+from PIL import Image
+import os
+import pandas as pd
+from torch.utils.data import Dataset, DataLoader
+import torch.optim as optim
 # https://flypix.ai/blog/image-recognition-algorithms/ why I choosed only first few layers for feature extraction, upto middle layers are sufficient to provide information about eyes
 # In higher layers of the network, detailed pixel information is lost whilethe high level content of the image is preserved. Clear Explanation is here(https://ai.stackexchange.com/questions/30038/why-do-we-lose-detail-of-an-image-as-we-go-deeper-into-a-convnet)
 class ResNetFeatureExtractor(nn.Module):
     def __init__(self):
         super(ResNetFeatureExtractor, self).__init__()
         resnet = models.resnet18(pretrained=True)
-        print(resnet)
 
         self.feature_extractor = nn.Sequential(*list(resnet.children())[:-3])
         
@@ -149,6 +149,29 @@ class Temporal(torch.nn.Module):
 
 
 
+
+#########################################################################
+
+class FeatureExtraction(torch.nn.Module):
+    feature_extractor = ResNetFeatureExtractor()
+    feature_extractor.eval()  
+    transform = transforms.Compose([ # pre processing the images to match the resnet's training statistics
+        transforms.Resize((128, 128)), 
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # normalization of the pixel values
+    ])
+
+    def extract_features(self, image_path):
+        img = Image.open(image_path).convert("RGB") 
+        img = self.transform(img).unsqueeze(0) # apply the transformations, batch size is set to 1
+        # with torch.no_grad():
+        features = self.feature_extractor(img)  
+        
+        return features
+
+
+#########################################################################
+
 class GazePrediction(nn.Module):
     """
     FC layer
@@ -156,32 +179,27 @@ class GazePrediction(nn.Module):
     reshape input to ( bs, seq_len*ch)  # flatten the input
     output shape: (bs, num_classes)  # output of the model
     """
-    def __init__(self, hidden_size, sequence_length, num_classes):
+    def __init__(self, input_dim, num_classes):
         super(GazePrediction, self).__init__()
-        # do we need more linear layers and dense/dropout before label mapping?
-        self.fc = nn.Linear(hidden_size * sequence_length, num_classes)  #https://www.kaggle.com/code/fanbyprinciple/learning-pytorch-3-coding-an-rnn-gru-lstm
-        # self.fc = nn.Linear(384, 3)   # I suppose it should be mapped the output of the GRU to the h_n.
+        self.fc = nn.Linear(input_dim, num_classes)
     
     def forward(self, x):
-        print ("enter FC layer")
-        x = x.view(x.size(0), -1)   # why??  # x.size represents the bs, and -1 will flatten the rest dims to 1D vector, it turns out to be (bs, features).)
-        # one question: for regression task, also use nn.Linear to map them to the output?
-        x = self.fc(x)              # after conventing to 1D vector, the output of the fc layer is (bs, num_classes) 
+        print("enter FC layer")
+        # Ensure x is flat going into the FC layer (it should already be flat if coming from GAP)
+        x = x.view(x.size(0), -1)  # Flatten to [bs, features]
+        x = self.fc(x)
         print("GazePrediction", x.shape)
         return x
 
-
-
-
-class WholeModel(nn.Module):
+class WholeModel(nn.Module): ## Sequence Length=batchsize !!
     def __init__(self):
         super(WholeModel, self).__init__()
         self.layers= (nn.ModuleList([
-                ResNetFeatureExtractor(),
+                FeatureExtraction(),
                 FeatureFusion(),
                 Attention(),
                 Temporal(),
-                GazePrediction(hidden_size=512, sequence_length=16, num_classes=3)  # why sequence_length = 64? h*w*bs, yes indeed :)
+                GazePrediction(input_dim=512, num_classes=3)  # why sequence_length = 64? h*w*bs, yes indeed :)
                 # RuntimeError: mat1 and mat2 shapes cannot be multiplied (4x8192 and 32768x3) from 8192/512=16 I know seq_len = 16, but why?
                 # answer: read the source code of GRU, the output of GRU is (seq_len, bs, hidden_size), so the input of FC layer should be (bs, seq_len*hidden_size)
             ]))
@@ -191,11 +209,11 @@ class WholeModel(nn.Module):
         # self.face = self.layers[0]
         
 
-    def forward(self, left_eye, right_eye, face):
+    def forward(self, left_eye_img, right_eye_img, face_img):
         # calculate 3 input features in parallel
-        left_eye = self.layers[0](left_eye)
-        right_eye = self.layers[0](right_eye)
-        face = self.layers[0](face)
+        left_eye = self.layers[0].extract_features(left_eye_img)
+        right_eye = self.layers[0].extract_features(right_eye_img)
+        face = self.layers[0].extract_features(face_img)
         ##################################
 
         fusioned_feature = self.layers[1](left_eye, right_eye, face)
@@ -212,10 +230,97 @@ class WholeModel(nn.Module):
         # reshape the output of GRU to (bs, seq_len, hidden_size)
         # seq_len, bs, ch = gru_out.shape
         # gru_out = gru_out.reshape(bs, seq_len, ch)  # (bs, seq_len*hidden_size)
-        gru_out = gru_out.reshape(gru_out.shape[0], -1)   
-        print("gru_out", gru_out.shape)
-
-        pred = self.layers[4](gru_out)
+        # gru_out = gru_out.reshape(gru_out.shape[0], -1)   
+        #print("gru_out", gru_out.shape)
+        gap = torch.mean(gru_out, dim=0)
+        print("asdfasdfasdfasdf")
+        print(gap.shape)
+        print("asdfasdfasdfasdf")
+        pred = self.layers[4](gap)  # FC layer handles the rest
         print("WholeModel", pred.shape)
         return pred
+    
+    
+
+###########################################################
+
+model = WholeModel()
+
+output = model("C:/Users/rohan/Desktop/Master/Master Thesis/Master-Thesis/Dataset-Test/Output Folder/webcam_r/left_eye/left_eye_0000.jpg", "C:/Users/rohan/Desktop/Master/Master Thesis/Master-Thesis/Dataset-Test/Output Folder/webcam_r/right_eye/right_eye_0000.jpg", "C:/Users/rohan/Desktop/Master/Master Thesis/Master-Thesis/Dataset-Test/Output Folder/webcam_r/face/face_0000.jpg")
+
+#########################################################
+
+
+# class GazeDatasetFromPaths(Dataset):
+#     def __init__(self, folder_path, label_path):
+#         self.folder_path = folder_path
+#         self.labels = pd.read_csv(label_path, header=None).values.astype('float32') # converted to numpy array
+#         self.left_eye_files = sorted(os.listdir(os.path.join(folder_path, "left_eye")))
+#         self.right_eye_files = sorted(os.listdir(os.path.join(folder_path, "right_eye")))
+#         self.face_files = sorted(os.listdir(os.path.join(folder_path, "face")))
+
+#     def __len__(self):
+#         return len(self.labels)
+
+#     def __getitem__(self, idx):
+#         left_path = os.path.join(self.folder_path, "left_eye", self.left_eye_files[idx])
+#         right_path = os.path.join(self.folder_path, "right_eye", self.right_eye_files[idx])
+#         face_path = os.path.join(self.folder_path, "face", self.face_files[idx])
+#         label = torch.tensor(self.labels[idx], dtype=torch.float32)
+#         print("--------------------------qwe-----------")
+#         print(label.shape)
+#         print("--------------------------qwe-----------")
+#         return left_path, right_path, face_path, label
+
+# def dot_product_loss(pred, target):
+
+#     pred = nn.functional.normalize(pred, p=2, dim=1) # Resulting vector will have the correct direction but unit vector
+#     target = nn.functional.normalize(target, p=2, dim=1)
+#     print(pred)
+#     print(target)
+#     return torch.sum(pred * target, dim=1).mean()
+
+# def angular_error(pred, target):
+#     pred = nn.functional.normalize(pred, p=2, dim=1)
+#     target = nn.functional.normalize(target, p=2, dim=1)
+#     cos_sim = torch.sum(pred * target, dim=1)
+#     return torch.acos(cos_sim) * (180.0 / torch.pi)
+
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# model = WholeModel().to(device)
+
+# dataset_path = "C:/Users/rohan/Desktop/Master/Master Thesis/Master-Thesis/Dataset-Test/Output Folder/webcam_r"
+# label_excel = "C:/Users/rohan/Desktop/Master/Master Thesis/Master-Thesis/Dataset-Test/Output Folder/data.csv"
+
+# dataset = GazeDatasetFromPaths(dataset_path, label_excel)
+# dataloader = DataLoader(dataset, batch_size=1, shuffle=True) # shuffle true? yes, cause label is included so no issue
+
+# optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+# epochs = 5
+# for epoch in range(epochs):
+#     model.train()
+#     total_loss = 0.0
+#     total_ang_error = 0.0
+
+#     for left_paths, right_paths, face_paths, labels in dataloader:
+#         labels = labels.to(device) # move labels to same device
+#         predictions = []
+
+#         for i in range(len(left_paths)):
+#             pred = model(left_paths[i], right_paths[i], face_paths[i]).squeeze(0)
+#             predictions.append(pred)
+
+#         predictions = torch.stack(predictions)
+#         loss = dot_product_loss(predictions, labels)
+#         ang_err = angular_error(predictions, labels).mean()
+
+#         optimizer.zero_grad()
+#         loss.backward()
+#         optimizer.step()
+
+#         total_loss += loss.item()
+#         total_ang_error += ang_err.item()
+
+#     print(f"Epoch {epoch+1}/{epochs} | Loss: {total_loss/len(dataloader):.4f} | Mean Angular Error: {total_ang_error/len(dataloader):.2f}°")
 
