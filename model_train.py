@@ -65,22 +65,7 @@ class GazeDatasetFromPaths(Dataset):
         print("--------------------------qwe-----------")
         print(label.shape)
         print("--------------------------qwe-----------")
-
-        # https://pytorch.org/tutorials/beginner/data_loading_tutorial.html
-        '''transform should be applied here, not in the model'''
-        # read imgs
-        left_img = Image.open(left_path).convert("RGB")
-        right_img = Image.open(right_path).convert("RGB")
-        face_img = Image.open(face_path).convert("RGB")
-
-        # transform the images to tensors
-        if self.transform:
-            left_img = self.transform(left_img)
-            right_img = self.transform(right_img)
-            face_img = self.transform(face_img)
-
-        # return tensors of the images and the label, instead of the path
-        return left_img, right_img, face_img, label
+        return left_path, right_path, face_path, label
     pass
     
 
@@ -119,15 +104,7 @@ def angular_error(pred, target):
     cos_sim = torch.sum(pred * target, dim=1)
     return torch.acos(cos_sim) * (180.0 / torch.pi)
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = WholeModel().to(device)  # Load the model
 
-# /data/leuven/374/vsc37415/OP/
-dataset_path = "C:/Users/rohan/Desktop/Master/Master Thesis/Master-Thesis/Dataset-Test/Output Folder/webcam_r"
-label_excel = "C:/Users/rohan/Desktop/Master/Master Thesis/Master-Thesis/Dataset-Test/Output Folder/data.csv"
-
-dataset = GazeDatasetFromPaths(dataset_path, label_excel)
-dataloader = DataLoader(dataset, batch_size=1, shuffle=True) # shuffle true? yes, cause label is included so no issue
 
 
 def validate_model(model, valid_dl, loss_func, log_images=False, batch_idx=0):
@@ -169,6 +146,17 @@ def log_image_table(images, predicted, labels, probs):
 
 
 def train():
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = WholeModel().to(device)  # Load the model
+
+    # /data/leuven/374/vsc37415/OP/
+    dataset_path = "C:/Users/rohan/Desktop/Master/Master Thesis/Master-Thesis/Dataset-Test/Output Folder/webcam_r"
+    label_excel = "C:/Users/rohan/Desktop/Master/Master Thesis/Master-Thesis/Dataset-Test/Output Folder/data.csv"
+
+    # dataset = GazeDatasetFromPaths(dataset_path, label_excel)
+    # dataloader = DataLoader(dataset, batch_size=1, shuffle=True) # shuffle true? yes, cause label is included so no issue
+
     # Train your model and upload checkpoints
     # Launch 3 experiments, trying different dropout rates
     for _ in range(3):
@@ -177,7 +165,7 @@ def train():
             project="pytorch-intro",
             config={
                 "epochs": 5,
-                "batch_size": 128,
+                "batch_size": 8,
                 "lr": 1e-3,
                 "dropout": random.uniform(0.01, 0.80),
             },
@@ -187,15 +175,14 @@ def train():
         config = wandb.config
 
         # Get the data
-        train_dl = get_dataloader(is_train=True, batch_size=config.batch_size)
-        valid_dl = get_dataloader(is_train=False, batch_size=2 * config.batch_size)
+        train_dl = get_dataloader(dataset_path, label_excel, batch_size=config.batch_size, shuffle=True)
+        valid_dl = get_dataloader(dataset_path, label_excel, batch_size=config.batch_size, shuffle=False)   # no shuffle for validation
         n_steps_per_epoch = math.ceil(len(train_dl.dataset) / config.batch_size)
 
-        # A simple MLP model
-        # model = get_model(config.dropout)
 
         # Make the loss and optimizer
-        loss_func = nn.CrossEntropyLoss()
+        # loss_func = nn.CrossEntropyLoss()
+        loss_func = dot_product_loss()
         optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
 
         # Training
@@ -203,10 +190,10 @@ def train():
         step_ct = 0
         for epoch in range(config.epochs):
             model.train()
-            for step, (images, labels) in enumerate(train_dl):
-                images, labels = images.to(device), labels.to(device)
+            for step, (Leyes, Reyes, faces, labels) in enumerate(train_dl):
+                Leyes, Reyes, faces, labels = Leyes.to(device), Reyes.to(device), faces.to(device), labels.to(device)
 
-                outputs = model(images)
+                outputs = model(Leyes, Reyes, faces)
                 train_loss = loss_func(outputs, labels)
                 optimizer.zero_grad()
                 train_loss.backward()
