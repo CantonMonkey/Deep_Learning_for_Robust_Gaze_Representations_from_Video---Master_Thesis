@@ -152,22 +152,35 @@ class Temporal(torch.nn.Module):
 
 #########################################################################
 
-class FeatureExtraction(torch.nn.Module):
-    feature_extractor = ResNetFeatureExtractor()
-    feature_extractor.eval()  
-    transform = transforms.Compose([ # pre processing the images to match the resnet's training statistics
-        transforms.Resize((128, 128)), 
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # normalization of the pixel values
-    ])
+# class FeatureExtraction(torch.nn.Module):
+#     feature_extractor = ResNetFeatureExtractor()
+#     feature_extractor.eval()  
+#     transform = transforms.Compose([ # pre processing the images to match the resnet's training statistics
+#         transforms.Resize((128, 128)), 
+#         transforms.ToTensor(),
+#         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # normalization of the pixel values
+#     ])
 
-    def extract_features(self, image_path):
-        img = Image.open(image_path).convert("RGB") 
-        img = self.transform(img).unsqueeze(0) # apply the transformations, batch size is set to 1
-        # with torch.no_grad():
-        features = self.feature_extractor(img)  
+#     def extract_features(self, image_path):
+#         img = Image.open(image_path).convert("RGB") 
+#         img = self.transform(img).unsqueeze(0) # apply the transformations, batch size is set to 1
+#         # with torch.no_grad():
+#         features = self.feature_extractor(img)  
         
+#         return features
+
+class FeatureExtraction(torch.nn.Module):
+    def __init__(self):
+        super(FeatureExtraction, self).__init__()
+        self.feature_extractor = ResNetFeatureExtractor()
+        self.feature_extractor.eval()
+
+    def extract_features(self, img_tensor):
+        img_tensor = img_tensor.unsqueeze(0)  # add batch dimension
+        with torch.no_grad():
+            features = self.feature_extractor(img_tensor)
         return features
+
 
 
 #########################################################################
