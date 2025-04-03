@@ -110,38 +110,45 @@ def angular_error(pred, target):
 def validate_model(model, valid_dl, loss_func, log_images=False, batch_idx=0):
     "Compute performance of the model on the validation dataset and log a wandb.Table"
     model.eval()
-    val_loss = 0.0
+    # val_loss = 0.0 ## we have 2
+    val_loss = 0.0  # total_loss
+    total_ang_error = 0.0
     with torch.inference_mode():
-        correct = 0
-        for i, (images, labels) in enumerate(valid_dl):
-            images, labels = images.to(device), labels.to(device)
+        # correct = 0 # originally template is for MNIST, so this is for classification.
+        for i, (Leyes, Reyes, faces, labels) in enumerate(valid_dl):
+            Leyes, Reyes, faces, labels = Leyes.to(device), Reyes.to(device), faces.to(device), labels.to(device), labels.to(device)
 
             # Forward pass ➡
-            outputs = model(images)
+            outputs = model(Leyes, Reyes, faces)
             val_loss += loss_func(outputs, labels) * labels.size(0)
 
-            # Compute accuracy and accumulate
-            _, predicted = torch.max(outputs.data, 1)
-            correct += (predicted == labels).sum().item()
+            # # Compute accuracy and accumulate 
+            # _, predicted = torch.max(outputs.data, 1)
+            # correct += (predicted == labels).sum().item()
+            # we are going to calculate angular error, so no need to calculate accuracy (that's for classification)
+
+            batch_error = angular_error(outputs, labels)  # angular error in degrees, base on batches 
+            total_error += batch_error.sum().item()
 
             # Log one batch of images to the dashboard, always same batch_idx.
             if i == batch_idx and log_images:
-                log_image_table(images, predicted, labels, outputs.softmax(dim=1))
-    return val_loss / len(valid_dl.dataset), correct / len(valid_dl.dataset)
+                log_image_table(Leyes, Reyes, faces, outputs, labels, outputs.softmax(dim=1))
+
+    return val_loss / len(valid_dl.dataset), total_ang_error / len(valid_dl.dataset)
 
 
 
 # Create a teble to compare the predicted values versus the true value
-def log_image_table(images, predicted, labels, probs):
+def log_image_table(Leyes, Reyes, faces, predicted, labels, probs):
     "Log a wandb.Table with (img, pred, target, scores)"
     # Create a wandb Table to log images, labels and predictions to
     table = wandb.Table(
-        columns=["image", "pred", "target"] + [f"score_{i}" for i in range(10)]
+        columns=["Leyes", "Reyes", "faces", "pred", "target"] + [f"score_{i}" for i in range(10)]
     )
     for img, pred, targ, prob in zip(
-        images.to("cpu"), predicted.to("cpu"), labels.to("cpu"), probs.to("cpu")
+        Leyes.to("cpu"), Reyes.to("cpu"), faces.to("cpu"), predicted.to("cpu"), labels.to("cpu"), probs.to("cpu")
     ):
-        table.add_data(wandb.Image(img[0].numpy() * 255), pred, targ, *prob.numpy())
+        table.add_data(wandb.Image(img[0].numpy() * 255), pred, targ, *prob.numpy()) ### change???
     wandb.log({"predictions_table": table}, commit=False)
 
 
@@ -179,6 +186,14 @@ def train():
         valid_dl = get_dataloader(dataset_path, label_excel, batch_size=config.batch_size, shuffle=False)   # no shuffle for validation
         n_steps_per_epoch = math.ceil(len(train_dl.dataset) / config.batch_size)
 
+        #########################################
+        ''' what's the difference in valid_dl'''
+        # # Get the data
+        # train_dl = get_dataloader(is_train=True, batch_size=config.batch_size)
+        # valid_dl = get_dataloader(is_train=False, batch_size=2 * config.batch_size)
+        # n_steps_per_epoch = math.ceil(len(train_dl.dataset) / config.batch_size)
+        ########################################
+
 
         # Make the loss and optimizer
         # loss_func = nn.CrossEntropyLoss()
@@ -188,6 +203,8 @@ def train():
         # Training
         example_ct = 0
         step_ct = 0
+        ##### same as     total_loss = 0.0 total_ang_error = 0.0 ?????????
+
         for epoch in range(config.epochs):
             model.train()
             for step, (Leyes, Reyes, faces, labels) in enumerate(train_dl):
