@@ -13,60 +13,82 @@ import math
 from PIL import Image
 
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+# https://pytorch.org/tutorials/recipes/recipes/custom_dataset_transforms_loader.html
 
-
-
-# def dataLoader():
-#     # load data from dataset remotely
-#     vsc_dir = ""
-#     ## load from remote VSC URL
-#     ###########
-
-#     # pytorch dataloader for data loading
-#     loaded = data.DataLoader(
-#         dataset,  # the loaded dataset
-#         batch_size=1, 
-#         shuffle=False, 
-#         sampler=None,
-#         batch_sampler=None, 
-#         num_workers=0, 
-#         collate_fn=None,
-#         pin_memory=False, 
-#         drop_last=False, 
-#         timeout=0,
-#         worker_init_fn=None, 
-#         *, # why?
-#         prefetch_factor=2,
-#         persistent_workers=False)
-    
-#     return loaded
-
-
-
-#substitute of MNIST dataset
 class GazeDatasetFromPaths(Dataset):
-    def __init__(self, folder_path, label_path):
-        self.folder_path = folder_path
-        self.labels = pd.read_csv(label_path, header=None).values.astype('float32') # converted to numpy array
-        self.left_eye_files = sorted(os.listdir(os.path.join(folder_path, "left_eye")))
-        self.right_eye_files = sorted(os.listdir(os.path.join(folder_path, "right_eye")))
-        self.face_files = sorted(os.listdir(os.path.join(folder_path, "face")))
+    '''for this class, the processing of label_path might need to be changed,
+    because the label_path is a csv file, not a folder'''
+    def __init__(self, root_dir, label_path, transform=None, camera_dirs=None):
+        self.root_dir = root_dir
+        self.transform = transform
+
+        if camera_dirs is None:
+            self.camera_dirs = ['l', 'r', 'c']
+        else:
+            self.camera_dirs = camera_dirs
+            
+        self.labels = pd.read_csv(label_path, header=None).values.astype('float32')
+
+        
+        ###########################################################
+        # all sub folders starting with 'step' in the base path
+        self.step_folders = sorted([
+            d for d in os.listdir(root_dir) 
+            if os.path.isdir(os.path.join(root_dir, d)) and d.startswith('step')
+        ])
+        
+        self.image_sets = []
+        for step_folder in self.step_folders:
+            for camera_dir in self.camera_dirs:
+                camera_path = os.path.join(root_dir, step_folder, camera_dir)   # create a cam path, l or r or c
+                
+                '''check if the camera path exists and contains the required folders'''
+                if os.path.exists(camera_path):
+                    if all(os.path.exists(os.path.join(camera_path, folder)) 
+                           for folder in ['left_eye', 'right_eye', 'face']):     # every l r c folder contains 3 sub folders
+                        
+                        '''check if folders contain images'''
+                        left_images = os.listdir(os.path.join(camera_path, 'left_eye'))
+                        right_images = os.listdir(os.path.join(camera_path, 'right_eye'))
+                        face_images = os.listdir(os.path.join(camera_path, 'face'))
+                        
+                        if left_images and right_images and face_images:
+                            self.image_sets.append((step_folder, camera_dir))
 
     def __len__(self):
-        return len(self.labels)
+        '''this value is the number of images in the dataset, not the number of folders, here it's calculated by the number of image sets (from the folders)'''
+        return len(self.image_sets) 
 
     def __getitem__(self, idx):
-        left_path = os.path.join(self.folder_path, "left_eye", self.left_eye_files[idx])
-        right_path = os.path.join(self.folder_path, "right_eye", self.right_eye_files[idx])
-        face_path = os.path.join(self.folder_path, "face", self.face_files[idx])
+        '''remember, step_folder specifies the l r c cams, and camera_dir specifies the left_eye, right_eye, face folders'''
+        step_folder, camera_dir = self.image_sets[idx]
+        folder_path = os.path.join(self.root_dir, step_folder, camera_dir)
+        
+        Leye_imgs = sorted(os.listdir(os.path.join(folder_path, "left_eye")))
+        Reye_imgs = sorted(os.listdir(os.path.join(folder_path, "right_eye")))
+        face_imgs = sorted(os.listdir(os.path.join(folder_path, "face")))
+        
+        ''' here only load the first image from each folder to check if Wandb works, but can be changed to load all images'''
+        ## change to load all imgs later'''
+        left_path = os.path.join(folder_path, "left_eye", Leye_imgs[0])
+        right_path = os.path.join(folder_path, "right_eye", Reye_imgs[0])
+        face_path = os.path.join(folder_path, "face", face_imgs[0])
         label = torch.tensor(self.labels[idx], dtype=torch.float32)
-        print("--------------------------qwe-----------")
-        print(label.shape)
-        print("--------------------------qwe-----------")
-        return left_path, right_path, face_path, label
-    pass
+        
+        ## Read images, or can be done by using OpenCV, no need to convert to RGB if using openCV.
+        left_img = Image.open(left_path).convert("RGB")
+        right_img = Image.open(right_path).convert("RGB")
+        face_img = Image.open(face_path).convert("RGB")
+        ''' transform should be applied here, not in the model'''
+        if self.transform:
+            left_img = self.transform(left_img)
+            right_img = self.transform(right_img)
+            face_img = self.transform(face_img)
+            
+        return left_img, right_img, face_img, label  # !!!!!!!!! now just one img as samle to check the Wandb log, but can be changed to all imgs later by using lists!!!!!!!!!!!!!!!!!!!!! #
     
 
 def get_dataloader(folder_path, label_path, batch_size, shuffle=True):
@@ -113,10 +135,13 @@ def validate_model(model, valid_dl, loss_func, log_images=False, batch_idx=0):
     # val_loss = 0.0 ## we have 2
     val_loss = 0.0  # total_loss
     total_ang_error = 0.0
+
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     with torch.inference_mode():
         # correct = 0 # originally template is for MNIST, so this is for classification.
         for i, (Leyes, Reyes, faces, labels) in enumerate(valid_dl):
-            Leyes, Reyes, faces, labels = Leyes.to(device), Reyes.to(device), faces.to(device), labels.to(device), labels.to(device)
+            Leyes, Reyes, faces, labels = Leyes.to(device), Reyes.to(device), faces.to(device), labels.to(device)
 
             # Forward pass ➡
             outputs = model(Leyes, Reyes, faces)
@@ -125,10 +150,10 @@ def validate_model(model, valid_dl, loss_func, log_images=False, batch_idx=0):
             # # Compute accuracy and accumulate 
             # _, predicted = torch.max(outputs.data, 1)
             # correct += (predicted == labels).sum().item()
-            # we are going to calculate angular error, so no need to calculate accuracy (that's for classification)
+            # we are going to calculate angular error, so no need to calculate accuracy (that's for classification)     
 
             batch_error = angular_error(outputs, labels)  # angular error in degrees, base on batches 
-            total_error += batch_error.sum().item()
+            total_ang_error += batch_error.sum().item()
 
             # Log one batch of images to the dashboard, always same batch_idx.
             if i == batch_idx and log_images:
@@ -139,27 +164,60 @@ def validate_model(model, valid_dl, loss_func, log_images=False, batch_idx=0):
 
 
 # Create a teble to compare the predicted values versus the true value
-def log_image_table(Leyes, Reyes, faces, predicted, labels, probs):
+def log_image_table(Leyes, Reyes, faces, predicted, labels, errors):
     "Log a wandb.Table with (img, pred, target, scores)"
     # Create a wandb Table to log images, labels and predictions to
+    # table = wandb.Table(
+    #     columns=["Leyes", "Reyes", "faces", "pred", "target"] + [f"score_{i}" for i in range(10)]  # not this, this is for classification
+    # )
+
     table = wandb.Table(
-        columns=["Leyes", "Reyes", "faces", "pred", "target"] + [f"score_{i}" for i in range(10)]
+        columns=["left_eye", "right_eye", "face", "pred_x", "pred_y", "pred_z", 
+                 "target_x", "target_y", "target_z", "angular_error"]
     )
-    for img, pred, targ, prob in zip(
-        Leyes.to("cpu"), Reyes.to("cpu"), faces.to("cpu"), predicted.to("cpu"), labels.to("cpu"), probs.to("cpu")
+
+    errors = angular_error(predicted, labels) # cal errors for each sample
+
+    for left, right, face, pred, targ, err in zip(
+        Leyes.to("cpu"), Reyes.to("cpu"), faces.to("cpu"), predicted.to("cpu"), labels.to("cpu"), errors.to("cpu")
     ):
-        table.add_data(wandb.Image(img[0].numpy() * 255), pred, targ, *prob.numpy()) ### change???
-    wandb.log({"predictions_table": table}, commit=False)
+        
+        # img visualization in Wandblog, normalize them to 0-255
+        '''normally pytorch tensors are in the shape of (c, h, w), but wandb expects them to be in the shape of (h, w, c)'''
+        left_img = wandb.Image(left.permute(1, 2, 0).numpy() * 255)  # rearrange channels to (h, w, c) and rescale to [0, 255]
+        right_img = wandb.Image(right.permute(1, 2, 0).numpy() * 255)
+        face_img = wandb.Image(face.permute(1, 2, 0).numpy() * 255)
+        
+
+        # table.add_data(wandb.Image(img[0].numpy() * 255), pred, targ, *prob.numpy()) ### change???
+
+        # add one row of data to the table
+        table.add_data(
+            left_img, right_img, face_img,
+            float(pred[0]), float(pred[1]), float(pred[2]),  # predictied x,y,z
+            float(targ[0]), float(targ[1]), float(targ[2]),  # actual x,y,z
+            float(err.item())                                # angular error, error is a tensor, so use item() to get the scalar value
+            # Use err.item() to get the scalar value in the tensor instead of directly using float(err)
+        )
+        
+    wandb.log({"gaze_predictions": table}, commit=False)
+    # wandb.log({"predictions_table": table}, commit=False)
 
 
 def train():
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
     model = WholeModel().to(device)  # Load the model
 
     # /data/leuven/374/vsc37415/OP/
-    dataset_path = "C:/Users/rohan/Desktop/Master/Master Thesis/Master-Thesis/Dataset-Test/Output Folder/webcam_r"
-    label_excel = "C:/Users/rohan/Desktop/Master/Master Thesis/Master-Thesis/Dataset-Test/Output Folder/data.csv"
+    # D:\thesis_code\OP
+    # dataset_path = "/data/leuven/374/vsc37415/OP/"
+    dataset_path = "D:/thesis_code/OP/"
+    # Leye_path = "/data/leuven/374/vsc37415/OP/"
+    # Reye_path = ""
+    # faces_path = ""
+    # label_excel = "/data/leuven/374/vsc37415/data.csv"
+    label_excel = "D:/thesis_code/data.csv"
 
     # dataset = GazeDatasetFromPaths(dataset_path, label_excel)
     # dataloader = DataLoader(dataset, batch_size=1, shuffle=True) # shuffle true? yes, cause label is included so no issue
@@ -174,7 +232,7 @@ def train():
                 "epochs": 5,
                 "batch_size": 8,
                 "lr": 1e-3,
-                "dropout": random.uniform(0.01, 0.80),
+                "dropout": random.uniform(0.01, 0.80), #trying different dropout rates
             },
         )
 
@@ -182,9 +240,12 @@ def train():
         config = wandb.config
 
         # Get the data
+        # combine different images from different folders
         train_dl = get_dataloader(dataset_path, label_excel, batch_size=config.batch_size, shuffle=True)
-        valid_dl = get_dataloader(dataset_path, label_excel, batch_size=config.batch_size, shuffle=False)   # no shuffle for validation
-        n_steps_per_epoch = math.ceil(len(train_dl.dataset) / config.batch_size)
+        '''!!!!!!!!!!!!'''
+        valid_dl = get_dataloader(dataset_path, label_excel, batch_size=config.batch_size, shuffle=False)   # no shuffle for validation, also 2 times batch size for faster validation?
+        '''!!!!!!!!!!!!'''
+        n_steps_per_epoch = math.ceil(len(train_dl.dataset) / config.batch_size) 
 
         #########################################
         ''' what's the difference in valid_dl'''
@@ -197,12 +258,12 @@ def train():
 
         # Make the loss and optimizer
         # loss_func = nn.CrossEntropyLoss()
-        loss_func = dot_product_loss()
+        loss_func = dot_product_loss
         optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
 
         # Training
-        example_ct = 0
-        step_ct = 0
+        example_ct = 0  # track the number of examples seen so far
+        step_ct = 0 # track the number of steps taken so far
         ##### same as     total_loss = 0.0 total_ang_error = 0.0 ?????????
 
         for epoch in range(config.epochs):
@@ -211,67 +272,56 @@ def train():
                 Leyes, Reyes, faces, labels = Leyes.to(device), Reyes.to(device), faces.to(device), labels.to(device)
 
                 outputs = model(Leyes, Reyes, faces)
-                train_loss = loss_func(outputs, labels)
+                train_loss = loss_func(outputs, labels)  # total_loss
+                batch_error = angular_error(outputs, labels) # angular error in degrees, base on batches
                 optimizer.zero_grad()
                 train_loss.backward()
                 optimizer.step()
 
-                example_ct += len(images)
+                # example_ct += len(images) # use imgs of labels for tracking?
+                example_ct += len(labels)
+
                 metrics = {
                     "train/train_loss": train_loss,
+                    "train/angular_error": batch_error,
                     "train/epoch": (step + 1 + (n_steps_per_epoch * epoch))
                     / n_steps_per_epoch,
                     "train/example_ct": example_ct,
                 }
 
                 if step + 1 < n_steps_per_epoch:
-                    # Log train metrics to wandb
                     wandb.log(metrics)
 
                 step_ct += 1
 
-            val_loss, accuracy = validate_model(
+            # acc?? no we dont use accuracy here, we use angular error
+            val_loss, val_error = validate_model(
                 model, valid_dl, loss_func, log_images=(epoch == (config.epochs - 1))
             )
 
             # Log train and validation metrics to wandb
-            val_metrics = {"val/val_loss": val_loss, "val/val_accuracy": accuracy}
+            val_metrics = {"val/val_loss": val_loss, 
+                           "val/val_error": val_error}
             wandb.log({**metrics, **val_metrics})
 
             # Save the model checkpoint to wandb
             torch.save(model, "my_model.pt")
             wandb.log_model(
                 "./my_model.pt",
-                "my_mnist_model",
+                "my_mnist_model",  # change?
                 aliases=[f"epoch-{epoch+1}_dropout-{round(wandb.config.dropout, 4)}"],
             )
 
             print(
-                f"Epoch: {epoch+1}, Train Loss: {train_loss:.3f}, Valid Loss: {val_loss:3f}, Accuracy: {accuracy:.2f}"
+                f"Epoch: {epoch+1}, Train Loss: {train_loss:.3f}, Valid Loss: {val_loss:3f}, Val_error: {val_error:.2f}"
             )
 
         # If you had a test set, this is how you could log it as a Summary metric
-        wandb.summary["test_accuracy"] = 0.8
+        wandb.summary["test_Val_error"] = val_error
 
         # Close your wandb run
         wandb.finish()
 
-
-
-# def train():
-#     model = WholeModel()
-
-#     bs = 16 # batch size
-#     # hidden_size =
-#     # sequence_length =
-#     # num_classes =
-
-#     Leye = torch.rand(bs,3, 16, 16)
-#     Reye = torch.rand(bs,3, 16, 16)
-#     FaceData = torch.rand(bs,3, 16, 16)  # currently matched with eyes......
-
-#     out = model(Leye, Reye, FaceData)
-#     print(out.shape)
 
 
 

@@ -176,7 +176,7 @@ class FeatureExtraction(torch.nn.Module):
         self.feature_extractor.eval()
 
     def extract_features(self, img_tensor):
-        img_tensor = img_tensor.unsqueeze(0)  # add batch dimension
+        # img_tensor = img_tensor.unsqueeze(0)  # add batch dimension, no...
         with torch.no_grad():
             features = self.feature_extractor(img_tensor)
         return features
@@ -264,75 +264,75 @@ class WholeModel(nn.Module): ## Sequence Length=batchsize !!
 #########################################################
 
 
-class GazeDatasetFromPaths(Dataset):
-    def __init__(self, folder_path, label_path):
-        self.folder_path = folder_path
-        self.labels = pd.read_csv(label_path, header=None).values.astype('float32') # converted to numpy array
-        self.left_eye_files = sorted(os.listdir(os.path.join(folder_path, "left_eye")))
-        self.right_eye_files = sorted(os.listdir(os.path.join(folder_path, "right_eye")))
-        self.face_files = sorted(os.listdir(os.path.join(folder_path, "face")))
+# class GazeDatasetFromPaths(Dataset):
+#     def __init__(self, folder_path, label_path):
+#         self.folder_path = folder_path
+#         self.labels = pd.read_csv(label_path, header=None).values.astype('float32') # converted to numpy array
+#         self.left_eye_files = sorted(os.listdir(os.path.join(folder_path, "left_eye")))
+#         self.right_eye_files = sorted(os.listdir(os.path.join(folder_path, "right_eye")))
+#         self.face_files = sorted(os.listdir(os.path.join(folder_path, "face")))
 
-    def __len__(self):
-        return len(self.labels)
+#     def __len__(self):
+#         return len(self.labels)
 
-    def __getitem__(self, idx):
-        left_path = os.path.join(self.folder_path, "left_eye", self.left_eye_files[idx])
-        right_path = os.path.join(self.folder_path, "right_eye", self.right_eye_files[idx])
-        face_path = os.path.join(self.folder_path, "face", self.face_files[idx])
-        label = torch.tensor(self.labels[idx], dtype=torch.float32)
-        print("--------------------------qwe-----------")
-        print(label.shape)
-        print("--------------------------qwe-----------")
-        return left_path, right_path, face_path, label
+#     def __getitem__(self, idx):
+#         left_path = os.path.join(self.folder_path, "left_eye", self.left_eye_files[idx])
+#         right_path = os.path.join(self.folder_path, "right_eye", self.right_eye_files[idx])
+#         face_path = os.path.join(self.folder_path, "face", self.face_files[idx])
+#         label = torch.tensor(self.labels[idx], dtype=torch.float32)
+#         print("--------------------------qwe-----------")
+#         print(label.shape)
+#         print("--------------------------qwe-----------")
+#         return left_path, right_path, face_path, label
 
-def dot_product_loss(pred, target):
+# def dot_product_loss(pred, target):
 
-    pred = nn.functional.normalize(pred, p=2, dim=1) # Resulting vector will have the correct direction but unit vector
-    target = nn.functional.normalize(target, p=2, dim=1)
-    print(pred)
-    print(target)
-    return torch.sum(pred * target, dim=1).mean()
+#     pred = nn.functional.normalize(pred, p=2, dim=1) # Resulting vector will have the correct direction but unit vector
+#     target = nn.functional.normalize(target, p=2, dim=1)
+#     print(pred)
+#     print(target)
+#     return torch.sum(pred * target, dim=1).mean()
 
-def angular_error(pred, target):
-    pred = nn.functional.normalize(pred, p=2, dim=1)
-    target = nn.functional.normalize(target, p=2, dim=1)
-    cos_sim = torch.sum(pred * target, dim=1)
-    return torch.acos(cos_sim) * (180.0 / torch.pi)
+# def angular_error(pred, target):
+#     pred = nn.functional.normalize(pred, p=2, dim=1)
+#     target = nn.functional.normalize(target, p=2, dim=1)
+#     cos_sim = torch.sum(pred * target, dim=1)
+#     return torch.acos(cos_sim) * (180.0 / torch.pi)
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = WholeModel().to(device)
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# model = WholeModel().to(device)
 
-dataset_path = "C:/Users/rohan/Desktop/Master/Master Thesis/Master-Thesis/Dataset-Test/Output Folder/webcam_r"
-label_excel = "C:/Users/rohan/Desktop/Master/Master Thesis/Master-Thesis/Dataset-Test/Output Folder/data.csv"
+# dataset_path = "C:/Users/rohan/Desktop/Master/Master Thesis/Master-Thesis/Dataset-Test/Output Folder/webcam_r"
+# label_excel = "C:/Users/rohan/Desktop/Master/Master Thesis/Master-Thesis/Dataset-Test/Output Folder/data.csv"
 
-dataset = GazeDatasetFromPaths(dataset_path, label_excel)
-dataloader = DataLoader(dataset, batch_size=1, shuffle=True) # shuffle true? yes, cause label is included so no issue
+# dataset = GazeDatasetFromPaths(dataset_path, label_excel)
+# dataloader = DataLoader(dataset, batch_size=1, shuffle=True) # shuffle true? yes, cause label is included so no issue
 
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+# optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-epochs = 5
-for epoch in range(epochs):
-    model.train()
-    total_loss = 0.0
-    total_ang_error = 0.0
+# epochs = 5
+# for epoch in range(epochs):
+#     model.train()
+#     total_loss = 0.0
+#     total_ang_error = 0.0
 
-    for left_paths, right_paths, face_paths, labels in dataloader:
-        labels = labels.to(device) # move labels to same device
-        predictions = []
+#     for left_paths, right_paths, face_paths, labels in dataloader:
+#         labels = labels.to(device) # move labels to same device
+#         predictions = []
 
-        for i in range(len(left_paths)):
-            pred = model(left_paths[i], right_paths[i], face_paths[i]).squeeze(0)
-            predictions.append(pred)
+#         for i in range(len(left_paths)):
+#             pred = model(left_paths[i], right_paths[i], face_paths[i]).squeeze(0)
+#             predictions.append(pred)
 
-        predictions = torch.stack(predictions)
-        loss = dot_product_loss(predictions, labels)
-        ang_err = angular_error(predictions, labels).mean()
+#         predictions = torch.stack(predictions)
+#         loss = dot_product_loss(predictions, labels)
+#         ang_err = angular_error(predictions, labels).mean()
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+#         optimizer.zero_grad()
+#         loss.backward()
+#         optimizer.step()
 
-        total_loss += loss.item()
-        total_ang_error += ang_err.item()
+#         total_loss += loss.item()
+#         total_ang_error += ang_err.item()
 
 #     print(f"Epoch {epoch+1}/{epochs} | Loss: {total_loss/len(dataloader):.4f} | Mean Angular Error: {total_ang_error/len(dataloader):.2f}°")
