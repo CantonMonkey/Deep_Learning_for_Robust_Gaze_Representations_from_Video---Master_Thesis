@@ -212,7 +212,7 @@ class WholeModel(nn.Module): ## Sequence Length=batchsize !!
                 FeatureFusion(),
                 Attention(),
                 Temporal(),
-                GazePrediction(input_dim=512, num_classes=3)  # why sequence_length = 64? h*w*bs, yes indeed :)
+                GazePrediction(input_dim=512, num_classes=2)  # why sequence_length = 64? h*w*bs, yes indeed :)
                 # RuntimeError: mat1 and mat2 shapes cannot be multiplied (4x8192 and 32768x3) from 8192/512=16 I know seq_len = 16, but why?
                 # answer: read the source code of GRU, the output of GRU is (seq_len, bs, hidden_size), so the input of FC layer should be (bs, seq_len*hidden_size)
             ]))

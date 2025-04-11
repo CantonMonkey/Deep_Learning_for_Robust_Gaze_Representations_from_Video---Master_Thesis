@@ -11,6 +11,7 @@ import torchvision.transforms as transforms
 import random
 import math
 from PIL import Image
+import h5py
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -23,24 +24,25 @@ class GazeDatasetFromPaths(Dataset):
     because the label_path is a csv file, not a folder'''
     def __init__(self, root_dir, label_path, transform=None, camera_dirs=None):
         self.root_dir = root_dir
+        self.lanbel_path = label_path
         self.transform = transform
 
         if camera_dirs is None:
             self.camera_dirs = ['l', 'r', 'c']
         else:
             self.camera_dirs = camera_dirs
-            
-        self.labels = pd.read_csv(label_path, header=None).values.astype('float32')
 
-        
-        ###########################################################
         # all sub folders starting with 'step' in the base path
         self.step_folders = sorted([
             d for d in os.listdir(root_dir) 
             if os.path.isdir(os.path.join(root_dir, d)) and d.startswith('step')
         ])
         
-        self.image_sets = []
+        self.Leye_imgs_path = []
+        self.Reye_imgs_path = []
+        self.face_imgs_path = []
+        self.labels = []  
+
         for step_folder in self.step_folders:
             for camera_dir in self.camera_dirs:
                 camera_path = os.path.join(root_dir, step_folder, camera_dir)   # create a cam path, l or r or c
@@ -51,31 +53,45 @@ class GazeDatasetFromPaths(Dataset):
                            for folder in ['left_eye', 'right_eye', 'face']):     # every l r c folder contains 3 sub folders
                         
                         '''check if folders contain images'''
-                        left_images = os.listdir(os.path.join(camera_path, 'left_eye'))
-                        right_images = os.listdir(os.path.join(camera_path, 'right_eye'))
-                        face_images = os.listdir(os.path.join(camera_path, 'face'))
+                        ''' is this still needed?'''
+                        left_images_path = os.listdir(os.path.join(camera_path, 'left_eye'))
+                        right_images_path = os.listdir(os.path.join(camera_path, 'right_eye'))
+                        face_images_path = os.listdir(os.path.join(camera_path, 'face'))
                         
-                        if left_images and right_images and face_images:
-                            self.image_sets.append((step_folder, camera_dir))
+                        if left_images_path and right_images_path and face_images_path:
+                            for i in range(len(left_images_path)):  # No. of frames are the same
+                                self.Leye_imgs_path.append(os.path.join(camera_path, 'left_eye', left_images_path[i]))
+                                self.Reye_imgs_path.append(os.path.join(camera_path, 'right_eye', right_images_path[i]))
+                                self.face_imgs_path.append(os.path.join(camera_path, 'face', face_images_path[i]))
+                
+
+                ''' how to match the label in .h5 file with the image sets?'''
+                if os.path.exists(self.label_path):
+                    # self.labels = pd.read_csv(label_path, header=None).values.astype('float32') ## change to read .h5 file
+                    label_file = [ l for l in os.listdir(label_path) if l.endswith('.h5')]  # only one .h5 file
+                    if label_file:
+                        label_path_h5 = os.path.join(camera_path, label_file[0])
+                        label_file = h5py.File(label_path_h5, 'r') # open the .h5 file as read only
+                        self.labels = label_file['/face_g_tobii/data'][:]  # will be overwritten, so only the last one will be kept
+                        label_file.close()
+
+        print(f"Number of path: {len(self.Leye_imgs_path)}")
+        print(f"Number of labels: {len(self.labels)}")
+                    
 
     def __len__(self):
         '''this value is the number of images in the dataset, not the number of folders, here it's calculated by the number of image sets (from the folders)'''
-        return len(self.image_sets) 
+        return len(self.Leye_imgs_path)  # L, R, face have the same len
 
     def __getitem__(self, idx):
         '''remember, step_folder specifies the l r c cams, and camera_dir specifies the left_eye, right_eye, face folders'''
-        step_folder, camera_dir = self.image_sets[idx]
-        folder_path = os.path.join(self.root_dir, step_folder, camera_dir)
+        # step_folder, camera_dir = self.image_sets[idx]
+        # folder_path = os.path.join(self.root_dir, step_folder, camera_dir)
+        ''' HERE!!!!!'''
+        left_path = self.Leye_imgs_path[idx]
+        right_path = self.Reye_imgs_path[idx]
+        face_path = self.face_imgs_path[idx]
         
-        Leye_imgs = sorted(os.listdir(os.path.join(folder_path, "left_eye")))
-        Reye_imgs = sorted(os.listdir(os.path.join(folder_path, "right_eye")))
-        face_imgs = sorted(os.listdir(os.path.join(folder_path, "face")))
-        
-        ''' here only load the first image from each folder to check if Wandb works, but can be changed to load all images'''
-        ## change to load all imgs later'''
-        left_path = os.path.join(folder_path, "left_eye", Leye_imgs[0])
-        right_path = os.path.join(folder_path, "right_eye", Reye_imgs[0])
-        face_path = os.path.join(folder_path, "face", face_imgs[0])
         label = torch.tensor(self.labels[idx], dtype=torch.float32)
         
         ## Read images, or can be done by using OpenCV, no need to convert to RGB if using openCV.
@@ -88,7 +104,7 @@ class GazeDatasetFromPaths(Dataset):
             right_img = self.transform(right_img)
             face_img = self.transform(face_img)
             
-        return left_img, right_img, face_img, label  # !!!!!!!!! now just one img as samle to check the Wandb log, but can be changed to all imgs later by using lists!!!!!!!!!!!!!!!!!!!!! #
+        return left_img, right_img, face_img, label 
     
 
 def get_dataloader(folder_path, label_path, batch_size, shuffle=True):
@@ -217,7 +233,8 @@ def train():
     # Reye_path = ""
     # faces_path = ""
     # label_excel = "/data/leuven/374/vsc37415/data.csv"
-    label_excel = "D:/thesis_code/data.csv"
+    # label_excel = "D:/thesis_code/data.csv"
+    label_excel = "D:/thesis_code/OP/"
 
     # dataset = GazeDatasetFromPaths(dataset_path, label_excel)
     # dataloader = DataLoader(dataset, batch_size=1, shuffle=True) # shuffle true? yes, cause label is included so no issue
