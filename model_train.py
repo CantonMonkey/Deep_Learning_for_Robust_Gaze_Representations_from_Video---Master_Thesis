@@ -24,7 +24,7 @@ class GazeDatasetFromPaths(Dataset):
     because the label_path is a csv file, not a folder'''
     def __init__(self, root_dir, label_path, transform=None, camera_dirs=None):
         self.root_dir = root_dir
-        self.lanbel_path = label_path
+        self.label_path = label_path
         self.transform = transform
 
         if camera_dirs is None:
@@ -46,10 +46,11 @@ class GazeDatasetFromPaths(Dataset):
         for step_folder in self.step_folders:
             for camera_dir in self.camera_dirs:
                 camera_path = os.path.join(root_dir, step_folder, camera_dir)   # create a cam path, l or r or c
-                
+                # print("camera_path", camera_path)
+                label_path = os.path.join(root_dir, step_folder, camera_dir)
                 '''check if the camera path exists and contains the required folders'''
                 if os.path.exists(camera_path):
-                    if all(os.path.exists(os.path.join(camera_path, folder)) 
+                    if all(os.path.exists(os.path.join(camera_path, folder))
                            for folder in ['left_eye', 'right_eye', 'face']):     # every l r c folder contains 3 sub folders
                         
                         '''check if folders contain images'''
@@ -60,6 +61,7 @@ class GazeDatasetFromPaths(Dataset):
                         
                         if left_images_path and right_images_path and face_images_path:
                             for i in range(len(left_images_path)):  # No. of frames are the same
+                                print(len(left_images_path)+len(right_images_path)+len(face_images_path))
                                 self.Leye_imgs_path.append(os.path.join(camera_path, 'left_eye', left_images_path[i]))
                                 self.Reye_imgs_path.append(os.path.join(camera_path, 'right_eye', right_images_path[i]))
                                 self.face_imgs_path.append(os.path.join(camera_path, 'face', face_images_path[i]))
@@ -67,12 +69,16 @@ class GazeDatasetFromPaths(Dataset):
 
                 ''' how to match the label in .h5 file with the image sets?'''
                 if os.path.exists(self.label_path):
+                    # print("label_path exists", self.label_path)
                     # self.labels = pd.read_csv(label_path, header=None).values.astype('float32') ## change to read .h5 file
                     label_file = [ l for l in os.listdir(label_path) if l.endswith('.h5')]  # only one .h5 file
                     if label_file:
+                        # print("found .h5 file", label_file[0])
                         label_path_h5 = os.path.join(camera_path, label_file[0])
+                        # print("label_path_h5", label_path_h5)
                         label_file = h5py.File(label_path_h5, 'r') # open the .h5 file as read only
-                        self.labels = label_file['/face_g_tobii/data'][:]  # will be overwritten, so only the last one will be kept
+                        # print (label_file['face_g_tobii'])
+                        self.labels = label_file['face_g_tobii/data'][:]  # will be overwritten, so only the last one will be kept
                         label_file.close()
 
         print(f"Number of path: {len(self.Leye_imgs_path)}")
