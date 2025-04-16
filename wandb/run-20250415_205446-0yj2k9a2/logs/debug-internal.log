@@ -1,0 +1,7 @@
+{"time":"2025-04-15T20:54:46.5658336+02:00","level":"INFO","msg":"stream: starting","core version":"0.19.9","symlink path":"C:\\Users\\rohan\\Desktop\\Master\\Master Thesis\\thesis\\Master-Thesis\\wandb\\run-20250415_205446-0yj2k9a2\\logs\\debug-core.log"}
+{"time":"2025-04-15T20:54:47.0176294+02:00","level":"INFO","msg":"created new stream","id":"0yj2k9a2"}
+{"time":"2025-04-15T20:54:47.0181965+02:00","level":"INFO","msg":"stream: started","id":"0yj2k9a2"}
+{"time":"2025-04-15T20:54:47.0181965+02:00","level":"INFO","msg":"writer: Do: started","stream_id":"0yj2k9a2"}
+{"time":"2025-04-15T20:54:47.0181965+02:00","level":"INFO","msg":"sender: started","stream_id":"0yj2k9a2"}
+{"time":"2025-04-15T20:54:47.0181965+02:00","level":"INFO","msg":"handler: started","stream_id":"0yj2k9a2"}
+{"time":"2025-04-15T20:54:47.2732392+02:00","level":"INFO","msg":"Starting system monitor"}

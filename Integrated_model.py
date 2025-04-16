@@ -3,12 +3,7 @@
 import torch
 import torch.nn as nn
 import torchvision.models as models
-import torchvision.transforms as transforms
-from PIL import Image
-import os
-import pandas as pd
-from torch.utils.data import Dataset, DataLoader
-import torch.optim as optim
+
 # https://flypix.ai/blog/image-recognition-algorithms/ why I choosed only first few layers for feature extraction, upto middle layers are sufficient to provide information about eyes
 # In higher layers of the network, detailed pixel information is lost whilethe high level content of the image is preserved. Clear Explanation is here(https://ai.stackexchange.com/questions/30038/why-do-we-lose-detail-of-an-image-as-we-go-deeper-into-a-convnet)
 class ResNetFeatureExtractor(nn.Module):
@@ -27,7 +22,7 @@ class ResNetFeatureExtractor(nn.Module):
     def forward(self, x):
         x = self.feature_extractor(x)  
         x = self.reduce_channels(x)   
-        print("ResNetFeatureExtractor", x.shape)
+        #print("ResNetFeatureExtractor", x.shape)
         return x  # (bs, ch, h, w)
 
 
@@ -50,7 +45,7 @@ class FeatureFusion(torch.nn.Module):
         # total_ch = Leye[1]+Reye[1]+FaceData[1]  # total channels of the input // this is not working 
         concate = torch.cat((left_eye, right_eye, face), 1)  # dim = 0 or 1?  only channel dim changes?
         out = self.gn(concate)
-        print("FeatureFusion", out.shape)
+        #print("FeatureFusion", out.shape)
         return out 
 
 # from vit_pytorch import ViT
@@ -87,7 +82,7 @@ class Attention(torch.nn.Module):
         #reshape the output
         # for input frames, the temporal information should be considered, how to define the input_size and hidden_size?
 
-        print("Attention", x_att.shape)
+        #print("Attention", x_att.shape)
         return x_att
         
 
@@ -131,7 +126,7 @@ class Temporal(torch.nn.Module):
         
 
     def forward(self, x_att, h_state=None):
-        print("Temporal_start", x_att.shape, h_state)
+        #print("Temporal_start", x_att.shape, h_state)
         # h_n itself should be an input for GRU, otherwise useless, dont forget the hidden state
         out, h_n = self.gru(x_att, h_state) # read the source, there are 2 outputs, but what is h_n here? should be the hidden state of the last layer?
         # mind the coherence of the input and output of the RNN layer 
@@ -139,8 +134,8 @@ class Temporal(torch.nn.Module):
         #reshape the output
         # for input frames, the temporal information should be considered, how to define the input_size and hidden_size?
 
-        print("Temporal out", out.shape)
-        print("Temporal h_n", h_n.shape)
+        #print("Temporal out", out.shape)
+        #print("Temporal h_n", h_n.shape)
         return out, h_n   # okay one important thing is to use h_n or out for fc layer?
         # answer: use out, since it contains the info of all "time steps" (or frame steps). However, h_n only contains the info of the last time step. 
         
@@ -197,11 +192,11 @@ class GazePrediction(nn.Module):
         self.fc = nn.Linear(input_dim, num_classes)
     
     def forward(self, x):
-        print("enter FC layer")
+        #print("enter FC layer")
         # Ensure x is flat going into the FC layer (it should already be flat if coming from GAP)
         x = x.view(x.size(0), -1)  # Flatten to [bs, features]
         x = self.fc(x)
-        print("GazePrediction", x.shape)
+        #print("GazePrediction", x.shape)
         return x
 
 class WholeModel(nn.Module): ## Sequence Length=batchsize !!
@@ -246,11 +241,12 @@ class WholeModel(nn.Module): ## Sequence Length=batchsize !!
         # gru_out = gru_out.reshape(gru_out.shape[0], -1)   
         #print("gru_out", gru_out.shape)
         gap = torch.mean(gru_out, dim=0)
-        print("asdfasdfasdfasdf")
-        print(gap.shape)
-        print("asdfasdfasdfasdf")
+        #print("asdfasdfasdfasdf")
+        #print(gap.shape)
+        #print("asdfasdfasdfasdf")
         pred = self.layers[4](gap)  # FC layer handles the rest
-        print("WholeModel", pred.shape)
+        #print("WholeModel", pred.shape)
+
         return pred
     
     

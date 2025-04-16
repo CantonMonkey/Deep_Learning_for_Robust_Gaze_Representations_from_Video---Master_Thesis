@@ -1,5 +1,4 @@
 import torch
-import torchaudio
 from Integrated_model import WholeModel
 # import torch.utils.data as data
 import os
@@ -12,7 +11,7 @@ import random
 import math
 from PIL import Image
 import h5py
-
+import logging
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -34,60 +33,62 @@ class GazeDatasetFromPaths(Dataset):
 
         # all sub folders starting with 'step' in the base path
         self.step_folders = sorted([
-            d for d in os.listdir(root_dir) 
+            d for d in os.listdir(root_dir)
             if os.path.isdir(os.path.join(root_dir, d)) and d.startswith('step')
         ])
-        
+
         self.Leye_imgs_path = []
         self.Reye_imgs_path = []
         self.face_imgs_path = []
-        self.labels = []  
+        self.labels = []
 
         for step_folder in self.step_folders:
             for camera_dir in self.camera_dirs:
-                camera_path = os.path.join(root_dir, step_folder, camera_dir)   # create a cam path, l or r or c
+                camera_path = os.path.join(root_dir, step_folder, camera_dir) # create a cam path, l or r or c
                 # print("camera_path", camera_path)
                 label_path = os.path.join(root_dir, step_folder, camera_dir)
                 '''check if the camera path exists and contains the required folders'''
                 if os.path.exists(camera_path):
                     if all(os.path.exists(os.path.join(camera_path, folder))
-                           for folder in ['left_eye', 'right_eye', 'face']):     # every l r c folder contains 3 sub folders
-                        
+                           for folder in ['left_eye', 'right_eye', 'face']): # every l r c folder contains 3 sub folders
                         '''check if folders contain images'''
                         ''' is this still needed?'''
                         left_images_path = os.listdir(os.path.join(camera_path, 'left_eye'))
                         right_images_path = os.listdir(os.path.join(camera_path, 'right_eye'))
                         face_images_path = os.listdir(os.path.join(camera_path, 'face'))
-                        
+
                         if left_images_path and right_images_path and face_images_path:
-                            for i in range(len(left_images_path)):  # No. of frames are the same
-                                print(len(left_images_path)+len(right_images_path)+len(face_images_path))
+                            for i in range(len(left_images_path)):
                                 self.Leye_imgs_path.append(os.path.join(camera_path, 'left_eye', left_images_path[i]))
                                 self.Reye_imgs_path.append(os.path.join(camera_path, 'right_eye', right_images_path[i]))
                                 self.face_imgs_path.append(os.path.join(camera_path, 'face', face_images_path[i]))
-                
-
                 ''' how to match the label in .h5 file with the image sets?'''
                 if os.path.exists(self.label_path):
                     # print("label_path exists", self.label_path)
                     # self.labels = pd.read_csv(label_path, header=None).values.astype('float32') ## change to read .h5 file
-                    label_file = [ l for l in os.listdir(label_path) if l.endswith('.h5')]  # only one .h5 file
+                    label_file = []
+                    for l in os.listdir(label_path):
+                        if l.endswith('.h5'):
+                            label_file.append(l) # contai latest h5 file
+                            #print(len(label_file))
+
                     if label_file:
-                        # print("found .h5 file", label_file[0])
                         label_path_h5 = os.path.join(camera_path, label_file[0])
-                        # print("label_path_h5", label_path_h5)
-                        label_file = h5py.File(label_path_h5, 'r') # open the .h5 file as read only
-                        # print (label_file['face_g_tobii'])
-                        self.labels = label_file['face_g_tobii/data'][:]  # will be overwritten, so only the last one will be kept
-                        label_file.close()
+                        # print("asefdvafcesrdfacdef")
+                        # print(label_path_h5)
+                        # print("asefdvafcesrdfacdef")
+                        with h5py.File(label_path_h5, 'r') as f:
+                            h5_labels = f['face_g_tobii/data'][:]
+                            self.labels.extend(h5_labels)
 
         print(f"Number of path: {len(self.Leye_imgs_path)}")
         print(f"Number of labels: {len(self.labels)}")
-                    
+
+
 
     def __len__(self):
         '''this value is the number of images in the dataset, not the number of folders, here it's calculated by the number of image sets (from the folders)'''
-        return len(self.Leye_imgs_path)  # L, R, face have the same len
+        return len(self.Leye_imgs_path)
 
     def __getitem__(self, idx):
         '''remember, step_folder specifies the l r c cams, and camera_dir specifies the left_eye, right_eye, face folders'''
@@ -97,21 +98,19 @@ class GazeDatasetFromPaths(Dataset):
         left_path = self.Leye_imgs_path[idx]
         right_path = self.Reye_imgs_path[idx]
         face_path = self.face_imgs_path[idx]
-        
         label = torch.tensor(self.labels[idx], dtype=torch.float32)
-        
-        ## Read images, or can be done by using OpenCV, no need to convert to RGB if using openCV.
+
         left_img = Image.open(left_path).convert("RGB")
         right_img = Image.open(right_path).convert("RGB")
         face_img = Image.open(face_path).convert("RGB")
-        ''' transform should be applied here, not in the model'''
+
         if self.transform:
             left_img = self.transform(left_img)
             right_img = self.transform(right_img)
             face_img = self.transform(face_img)
-            
-        return left_img, right_img, face_img, label 
-    
+
+        return left_img, right_img, face_img, label
+
 
 def get_dataloader(folder_path, label_path, batch_size, shuffle=True):
     # dataset = GazeDatasetFromPaths(dataset_path, label_excel)
@@ -128,24 +127,53 @@ def get_dataloader(folder_path, label_path, batch_size, shuffle=True):
         batch_size=batch_size,
         shuffle=shuffle,
         pin_memory=True,
-        num_workers=2,
+        num_workers=1,
+        drop_last=True # added this because there is always some error at the end of epoch
+
     )
 
     return loader
 
 
-def dot_product_loss(pred, target):
+# def dot_product_loss(pred, target):
+#
+#     pred = nn.functional.normalize(pred, p=2, dim=1) # Resulting vector will have the correct direction but unit vector
+#     target = nn.functional.normalize(target, p=2, dim=1)
+#     print(pred)
+#     print(target)
+#     return torch.sum(pred * target, dim=1).mean()
+def spherical_to_cartesian(theta_phi):
+    theta = theta_phi[:, 0]
+    phi = theta_phi[:, 1]
+    if torch.isnan(theta_phi).any():
+        print(" NaN detected in spherical to cartesian")
+    # print("label from stc function")
+    # print(theta)
+    # print(phi)
+    # print("label from stc function")
+    x = torch.sin(theta) * torch.cos(phi)
+    y = torch.sin(theta) * torch.sin(phi)
+    z = torch.cos(theta)
+    return torch.stack([x, y, z], dim=1)
 
-    pred = nn.functional.normalize(pred, p=2, dim=1) # Resulting vector will have the correct direction but unit vector
-    target = nn.functional.normalize(target, p=2, dim=1)
-    print(pred)
-    print(target)
-    return torch.sum(pred * target, dim=1).mean()
-
-def angular_error(pred, target):
-    pred = nn.functional.normalize(pred, p=2, dim=1)
-    target = nn.functional.normalize(target, p=2, dim=1)
-    cos_sim = torch.sum(pred * target, dim=1)
+def angular_error(pred_theta_phi, target_theta_phi):
+    #print(pred_theta_phi)
+    #print(target_theta_phi)
+    # if(pred_theta_phi.shape != target_theta_phi.shape):
+    #     print("SHAPES ARE DIFFERENT!!!") # Make this a log to see if there is any mismatch
+    pred_vec = spherical_to_cartesian(pred_theta_phi)
+    if(torch.isnan(spherical_to_cartesian(pred_theta_phi)).any()):
+        print("Sometthing wrong in the labels~!!!!!!!!!!!!!!!!!!!!")
+    if(torch.isnan(spherical_to_cartesian(target_theta_phi)).any()):
+        print("Sometthing wrong in the labels~!!!!!!!!!!!!!!!!!!!!")
+    target_vec = spherical_to_cartesian(target_theta_phi)
+    pred_vec = nn.functional.normalize(pred_vec, p=2, dim=1)
+    target_vec = nn.functional.normalize(target_vec, p=2, dim=1)
+    cos_sim = torch.sum(pred_vec * target_vec, dim=1)
+    cos_sim = torch.clamp(cos_sim, -1.0, 1.0)
+    # print("asdfaecwrfatgeht")
+    # print(torch.acos(cos_sim) * (180.0 / torch.pi))
+    # print("asdfaecwrfatgeht")
     return torch.acos(cos_sim) * (180.0 / torch.pi)
 
 
@@ -192,24 +220,25 @@ def log_image_table(Leyes, Reyes, faces, predicted, labels, errors):
     # table = wandb.Table(
     #     columns=["Leyes", "Reyes", "faces", "pred", "target"] + [f"score_{i}" for i in range(10)]  # not this, this is for classification
     # )
+    predicted = spherical_to_cartesian(predicted)
+    labels = spherical_to_cartesian(labels)
 
     table = wandb.Table(
-        columns=["left_eye", "right_eye", "face", "pred_x", "pred_y", "pred_z", 
+        columns=["left_eye", "right_eye", "face", "pred_x", "pred_y", "pred_z",
                  "target_x", "target_y", "target_z", "angular_error"]
     )
 
-    errors = angular_error(predicted, labels) # cal errors for each sample
+    errors = angular_error(predicted, labels)  # cal errors for each sample
 
     for left, right, face, pred, targ, err in zip(
-        Leyes.to("cpu"), Reyes.to("cpu"), faces.to("cpu"), predicted.to("cpu"), labels.to("cpu"), errors.to("cpu")
+            Leyes.to("cpu"), Reyes.to("cpu"), faces.to("cpu"), predicted.to("cpu"), labels.to("cpu"), errors.to("cpu")
     ):
-        
         # img visualization in Wandblog, normalize them to 0-255
         '''normally pytorch tensors are in the shape of (c, h, w), but wandb expects them to be in the shape of (h, w, c)'''
-        left_img = wandb.Image(left.permute(1, 2, 0).numpy() * 255)  # rearrange channels to (h, w, c) and rescale to [0, 255]
+        left_img = wandb.Image(
+            left.permute(1, 2, 0).numpy() * 255)  # rearrange channels to (h, w, c) and rescale to [0, 255]
         right_img = wandb.Image(right.permute(1, 2, 0).numpy() * 255)
         face_img = wandb.Image(face.permute(1, 2, 0).numpy() * 255)
-        
 
         # table.add_data(wandb.Image(img[0].numpy() * 255), pred, targ, *prob.numpy()) ### change???
 
@@ -218,12 +247,13 @@ def log_image_table(Leyes, Reyes, faces, predicted, labels, errors):
             left_img, right_img, face_img,
             float(pred[0]), float(pred[1]), float(pred[2]),  # predictied x,y,z
             float(targ[0]), float(targ[1]), float(targ[2]),  # actual x,y,z
-            float(err.item())                                # angular error, error is a tensor, so use item() to get the scalar value
+            float(err.item())  # angular error, error is a tensor, so use item() to get the scalar value
             # Use err.item() to get the scalar value in the tensor instead of directly using float(err)
         )
-        
+
     wandb.log({"gaze_predictions": table}, commit=False)
     # wandb.log({"predictions_table": table}, commit=False)
+
 
 
 def train():
@@ -234,20 +264,22 @@ def train():
     # /data/leuven/374/vsc37415/OP/
     # D:\thesis_code\OP
     # dataset_path = "/data/leuven/374/vsc37415/OP/"
-    dataset_path = "D:/thesis_code/OP/"
+    dataset_path = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP"
+    # dataset_path = r"C:\Users\rohan\Desktop\Master\Master Thesis\Datasets\OP"
     # Leye_path = "/data/leuven/374/vsc37415/OP/"
     # Reye_path = ""
     # faces_path = ""
     # label_excel = "/data/leuven/374/vsc37415/data.csv"
     # label_excel = "D:/thesis_code/data.csv"
-    label_excel = "D:/thesis_code/OP/"
+    label_excel = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP"
+    # label_excel = r"C:\Users\rohan\Desktop\Master\Master Thesis\Datasets\OP"
 
     # dataset = GazeDatasetFromPaths(dataset_path, label_excel)
     # dataloader = DataLoader(dataset, batch_size=1, shuffle=True) # shuffle true? yes, cause label is included so no issue
 
     # Train your model and upload checkpoints
     # Launch 3 experiments, trying different dropout rates
-    for _ in range(3):
+    for _ in range(1):
         # initialise a wandb run
         wandb.init(
             project="pytorch-intro",
@@ -281,7 +313,7 @@ def train():
 
         # Make the loss and optimizer
         # loss_func = nn.CrossEntropyLoss()
-        loss_func = dot_product_loss
+        loss_func = angular_error
         optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
 
         # Training
@@ -297,16 +329,25 @@ def train():
                 outputs = model(Leyes, Reyes, faces)
                 train_loss = loss_func(outputs, labels)  # total_loss
                 batch_error = angular_error(outputs, labels) # angular error in degrees, base on batches
+                if torch.isnan(train_loss).any():
+                    print(f" NaN detected in train_loss at epoch {epoch}, step {step}")
+
+                if torch.isnan(batch_error).any():
+                    print(f" NaN detected in angular_error at epoch {epoch}, step {step}")
+
                 optimizer.zero_grad()
-                train_loss.backward()
+                # print("asdfasedrfacsd")
+                # print(train_loss.mean())
+                # print("asdfasedrfacsd")
+                train_loss.mean().backward()
                 optimizer.step()
 
                 # example_ct += len(images) # use imgs of labels for tracking?
                 example_ct += len(labels)
 
                 metrics = {
-                    "train/train_loss": train_loss,
-                    "train/angular_error": batch_error,
+                    "train/train_loss": train_loss.mean().item(),
+                    "train/angular_error": batch_error.mean().item(),
                     "train/epoch": (step + 1 + (n_steps_per_epoch * epoch))
                     / n_steps_per_epoch,
                     "train/example_ct": example_ct,
@@ -336,7 +377,7 @@ def train():
             )
 
             print(
-                f"Epoch: {epoch+1}, Train Loss: {train_loss:.3f}, Valid Loss: {val_loss:3f}, Val_error: {val_error:.2f}"
+                f"Epoch: {epoch+1}"
             )
 
         # If you had a test set, this is how you could log it as a Summary metric
