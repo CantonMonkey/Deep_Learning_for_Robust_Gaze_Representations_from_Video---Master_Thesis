@@ -145,36 +145,48 @@ def get_dataloader(folder_path, label_path, batch_size, shuffle=True):
 def spherical_to_cartesian(theta_phi):
     theta = theta_phi[:, 0]
     phi = theta_phi[:, 1]
-    if torch.isnan(theta_phi).any():
-        print(" NaN detected in spherical to cartesian")
-    # print("label from stc function")
-    # print(theta)
-    # print(phi)
-    # print("label from stc function")
+    if(torch.isnan(theta_phi).any()):
+        print(f"theta range: min={theta.min().item()}, max={theta.max().item()}, NaN={torch.isnan(theta).any()}")
+        print(f"phi range: min={phi.min().item()}, max={phi.max().item()}, NaN={torch.isnan(phi).any()}")
+
     x = torch.sin(theta) * torch.cos(phi)
     y = torch.sin(theta) * torch.sin(phi)
     z = torch.cos(theta)
-    return torch.stack([x, y, z], dim=1)
+
+    result = torch.stack([x, y, z], dim=1)
+    if (torch.isnan(result).any()):
+        print(f"cartesian result NaN check: {torch.isnan(result).any()}")
+
+    return result
+
 
 def angular_error(pred_theta_phi, target_theta_phi):
-    #print(pred_theta_phi)
-    #print(target_theta_phi)
-    # if(pred_theta_phi.shape != target_theta_phi.shape):
-    #     print("SHAPES ARE DIFFERENT!!!") # Make this a log to see if there is any mismatch
+    if (torch.isnan(pred_theta_phi).any() or torch.isnan(pred_theta_phi).any()):
+        print(f"pred_theta_phi NaN check: {torch.isnan(pred_theta_phi).any()}")
+        print(f"target_theta_phi NaN check: {torch.isnan(target_theta_phi).any()}")
+
     pred_vec = spherical_to_cartesian(pred_theta_phi)
-    if(torch.isnan(spherical_to_cartesian(pred_theta_phi)).any()):
-        print("Sometthing wrong in the labels~!!!!!!!!!!!!!!!!!!!!")
-    if(torch.isnan(spherical_to_cartesian(target_theta_phi)).any()):
-        print("Sometthing wrong in the labels~!!!!!!!!!!!!!!!!!!!!")
     target_vec = spherical_to_cartesian(target_theta_phi)
+
     pred_vec = nn.functional.normalize(pred_vec, p=2, dim=1)
+    if (torch.isnan(pred_vec).any()):
+        print(f"normalized pred_vec NaN check: {torch.isnan(pred_vec).any()}")
+
     target_vec = nn.functional.normalize(target_vec, p=2, dim=1)
+    if (torch.isnan(target_vec).any()):
+        print(f"normalized target_vec NaN check: {torch.isnan(target_vec).any()}")
+
     cos_sim = torch.sum(pred_vec * target_vec, dim=1)
+    if (torch.isnan(cos_sim).any()):
+        print(f"cos_sim range: min={cos_sim.min().item()}, max={cos_sim.max().item()}, NaN={torch.isnan(cos_sim).any()}")
+
     cos_sim = torch.clamp(cos_sim, -1.0, 1.0)
-    # print("asdfaecwrfatgeht")
-    # print(torch.acos(cos_sim) * (180.0 / torch.pi))
-    # print("asdfaecwrfatgeht")
-    return torch.acos(cos_sim) * (180.0 / torch.pi)
+
+    result = torch.acos(cos_sim) * (180.0 / torch.pi)
+    if (torch.isnan(result).any()):
+        print(f"angular error NaN check: {torch.isnan(result).any()}")
+
+    return result
 
 
 
@@ -284,7 +296,7 @@ def train():
         wandb.init(
             project="pytorch-intro",
             config={
-                "epochs": 5,
+                "epochs": 3,
                 "batch_size": 8,
                 "lr": 1e-3,
                 "dropout": random.uniform(0.01, 0.80), #trying different dropout rates
@@ -327,20 +339,31 @@ def train():
                 Leyes, Reyes, faces, labels = Leyes.to(device), Reyes.to(device), faces.to(device), labels.to(device)
 
                 outputs = model(Leyes, Reyes, faces)
-                train_loss = loss_func(outputs, labels)  # total_loss
-                batch_error = angular_error(outputs, labels) # angular error in degrees, base on batches
+                if (torch.isnan(outputs).any()):
+                    print(f"Model outputs NaN check: {torch.isnan(outputs).any()}")
+
+                train_loss = loss_func(outputs, labels)
                 if torch.isnan(train_loss).any():
+                    print(f"Loss NaN check: {torch.isnan(train_loss).any()}")
+                batch_error = angular_error(outputs, labels) # angular error in degrees, base on batches
+                if torch.isnan(batch_error).any():
                     print(f" NaN detected in train_loss at epoch {epoch}, step {step}")
 
-                if torch.isnan(batch_error).any():
-                    print(f" NaN detected in angular_error at epoch {epoch}, step {step}")
 
                 optimizer.zero_grad()
                 # print("asdfasedrfacsd")
                 # print(train_loss.mean())
                 # print("asdfasedrfacsd")
+                # After backward but before optimizer step
                 train_loss.mean().backward()
+
+                # Check gradients for NaN
+                for name, param in model.named_parameters():
+                    if param.grad is not None and torch.isnan(param.grad).any():
+                        print(f"NaN gradient detected in {name}")
+
                 optimizer.step()
+
 
                 # example_ct += len(images) # use imgs of labels for tracking?
                 example_ct += len(labels)

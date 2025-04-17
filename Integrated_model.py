@@ -70,7 +70,6 @@ class Attention(torch.nn.Module):
                 mlp_dim = 2048,  # the hidden layer dim of the mlp (the hidden layer of the feedforward network, which is applied to each position (each token) separately and identically)
                 # dropout = 0.
                 # def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout = 0.)
-                
         )
 
 
@@ -215,120 +214,51 @@ class WholeModel(nn.Module): ## Sequence Length=batchsize !!
         # self.left_eye = self.layers[0]
         # self.right_eye = self.layers[0]
         # self.face = self.layers[0]
-        
 
     def forward(self, left_eye_img, right_eye_img, face_img):
-        # calculate 3 input features in parallel
+        # Extract features
         left_eye = self.layers[0].extract_features(left_eye_img)
+        if (torch.isnan(left_eye).any()):
+            print(f"left_eye feature NaN check: {torch.isnan(left_eye).any()}")
+
         right_eye = self.layers[0].extract_features(right_eye_img)
+        if (torch.isnan(right_eye).any()):
+            print(f"right_eye feature NaN check: {torch.isnan(right_eye).any()}")
+
         face = self.layers[0].extract_features(face_img)
-        ##################################
+        if (torch.isnan(face).any()):
+            print(f"face feature NaN check: {torch.isnan(face).any()}")
 
+        # Fusion
         fusioned_feature = self.layers[1](left_eye, right_eye, face)
+        if (torch.isnan(fusioned_feature).any()):
+            print(f"fusion NaN check: {torch.isnan(fusioned_feature).any()}")
 
+        # Attention
         Attention_map = self.layers[2](fusioned_feature)
+        if (torch.isnan(Attention_map).any()):
+            print(f"attention NaN check: {torch.isnan(Attention_map).any()}")
 
+        # Reshape for GRU
         bs, seq_len, ch = Attention_map.shape
         Attention_map = Attention_map.reshape(seq_len, bs, ch)
 
-        gru_out, _ = self.layers[3](Attention_map)  # h_n is not needed for FC layer, or it can be used if other tequniques are used 
-        # so, I think multiple GRU blocks are needed. Answer: No, just change the num_layers param in the GRU block
-        # gru_out = gru_out.reshape(gru_out.shape[0], -1) ##https://www.kaggle.com/code/fanbyprinciple/learning-pytorch-3-coding-an-rnn-gru-lstm # alredy done in the FC class
+        # GRU
+        gru_out, _ = self.layers[3](Attention_map)
+        if (torch.isnan(gru_out).any()):
+            print(f"GRU output NaN check: {torch.isnan(gru_out).any()}")
 
-        # reshape the output of GRU to (bs, seq_len, hidden_size)
-        # seq_len, bs, ch = gru_out.shape
-        # gru_out = gru_out.reshape(bs, seq_len, ch)  # (bs, seq_len*hidden_size)
-        # gru_out = gru_out.reshape(gru_out.shape[0], -1)   
-        #print("gru_out", gru_out.shape)
+        # GAP
         gap = torch.mean(gru_out, dim=0)
-        #print("asdfasdfasdfasdf")
-        #print(gap.shape)
-        #print("asdfasdfasdfasdf")
-        pred = self.layers[4](gap)  # FC layer handles the rest
-        #print("WholeModel", pred.shape)
+        if (torch.isnan(gap).any()):
+            print(f"GAPP prediction NaN check: {torch.isnan(gap).any()}")
+
+        # FC layer
+        pred = self.layers[4](gap)
+        if(torch.isnan(pred).any()):
+
+            print(f"Final prediction NaN check: {torch.isnan(pred).any()}")
 
         return pred
     
     
-
-###########################################################
-
-# model = WholeModel()
-
-# output = model("C:/Users/rohan/Desktop/Master/Master Thesis/Master-Thesis/Dataset-Test/Output Folder/webcam_r/left_eye/left_eye_0000.jpg", "C:/Users/rohan/Desktop/Master/Master Thesis/Master-Thesis/Dataset-Test/Output Folder/webcam_r/right_eye/right_eye_0000.jpg", "C:/Users/rohan/Desktop/Master/Master Thesis/Master-Thesis/Dataset-Test/Output Folder/webcam_r/face/face_0000.jpg")
-
-#########################################################
-
-
-# class GazeDatasetFromPaths(Dataset):
-#     def __init__(self, folder_path, label_path):
-#         self.folder_path = folder_path
-#         self.labels = pd.read_csv(label_path, header=None).values.astype('float32') # converted to numpy array
-#         self.left_eye_files = sorted(os.listdir(os.path.join(folder_path, "left_eye")))
-#         self.right_eye_files = sorted(os.listdir(os.path.join(folder_path, "right_eye")))
-#         self.face_files = sorted(os.listdir(os.path.join(folder_path, "face")))
-
-#     def __len__(self):
-#         return len(self.labels)
-
-#     def __getitem__(self, idx):
-#         left_path = os.path.join(self.folder_path, "left_eye", self.left_eye_files[idx])
-#         right_path = os.path.join(self.folder_path, "right_eye", self.right_eye_files[idx])
-#         face_path = os.path.join(self.folder_path, "face", self.face_files[idx])
-#         label = torch.tensor(self.labels[idx], dtype=torch.float32)
-#         print("--------------------------qwe-----------")
-#         print(label.shape)
-#         print("--------------------------qwe-----------")
-#         return left_path, right_path, face_path, label
-
-# def dot_product_loss(pred, target):
-
-#     pred = nn.functional.normalize(pred, p=2, dim=1) # Resulting vector will have the correct direction but unit vector
-#     target = nn.functional.normalize(target, p=2, dim=1)
-#     print(pred)
-#     print(target)
-#     return torch.sum(pred * target, dim=1).mean()
-
-# def angular_error(pred, target):
-#     pred = nn.functional.normalize(pred, p=2, dim=1)
-#     target = nn.functional.normalize(target, p=2, dim=1)
-#     cos_sim = torch.sum(pred * target, dim=1)
-#     return torch.acos(cos_sim) * (180.0 / torch.pi)
-
-# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# model = WholeModel().to(device)
-
-# dataset_path = "C:/Users/rohan/Desktop/Master/Master Thesis/Master-Thesis/Dataset-Test/Output Folder/webcam_r"
-# label_excel = "C:/Users/rohan/Desktop/Master/Master Thesis/Master-Thesis/Dataset-Test/Output Folder/data.csv"
-
-# dataset = GazeDatasetFromPaths(dataset_path, label_excel)
-# dataloader = DataLoader(dataset, batch_size=1, shuffle=True) # shuffle true? yes, cause label is included so no issue
-
-# optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-# epochs = 5
-# for epoch in range(epochs):
-#     model.train()
-#     total_loss = 0.0
-#     total_ang_error = 0.0
-
-#     for left_paths, right_paths, face_paths, labels in dataloader:
-#         labels = labels.to(device) # move labels to same device
-#         predictions = []
-
-#         for i in range(len(left_paths)):
-#             pred = model(left_paths[i], right_paths[i], face_paths[i]).squeeze(0)
-#             predictions.append(pred)
-
-#         predictions = torch.stack(predictions)
-#         loss = dot_product_loss(predictions, labels)
-#         ang_err = angular_error(predictions, labels).mean()
-
-#         optimizer.zero_grad()
-#         loss.backward()
-#         optimizer.step()
-
-#         total_loss += loss.item()
-#         total_ang_error += ang_err.item()
-
-#     print(f"Epoch {epoch+1}/{epochs} | Loss: {total_loss/len(dataloader):.4f} | Mean Angular Error: {total_ang_error/len(dataloader):.2f}°")
