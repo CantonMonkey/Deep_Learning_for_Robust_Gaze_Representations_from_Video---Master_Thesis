@@ -1,7 +1,0 @@
-{"time":"2025-04-14T09:23:14.1238134+02:00","level":"INFO","msg":"stream: starting","core version":"0.19.9","symlink path":"C:\\Users\\rohan\\Desktop\\Master\\Master Thesis\\thesis\\Master-Thesis\\wandb\\run-20250414_092314-pwzwpyfa\\logs\\debug-core.log"}
-{"time":"2025-04-14T09:23:14.8032198+02:00","level":"INFO","msg":"created new stream","id":"pwzwpyfa"}
-{"time":"2025-04-14T09:23:14.8032198+02:00","level":"INFO","msg":"stream: started","id":"pwzwpyfa"}
-{"time":"2025-04-14T09:23:14.8032198+02:00","level":"INFO","msg":"writer: Do: started","stream_id":"pwzwpyfa"}
-{"time":"2025-04-14T09:23:14.8032198+02:00","level":"INFO","msg":"sender: started","stream_id":"pwzwpyfa"}
-{"time":"2025-04-14T09:23:14.8032198+02:00","level":"INFO","msg":"handler: started","stream_id":"pwzwpyfa"}
-{"time":"2025-04-14T09:23:15.0435679+02:00","level":"INFO","msg":"Starting system monitor"}

@@ -14,7 +14,7 @@ class ResNetFeatureExtractor(nn.Module):
         self.feature_extractor = nn.Sequential(*list(resnet.children())[:-3])
         
         self.feature_extractor[-1][0].conv1.stride = (1, 1) # normally resnet has stride = 2 in layer 3 this will downsample from 8x8 to 4x4. This is to avoid this. More spatil features are preserved
-        self.feature_extractor[-1][0].downsample[0].stride = (1, 1)
+        self.feature_extractor[-1][0].downsample[0].stride = (1, 1) 
 
         self.reduce_channels = nn.Conv2d(256, 128, kernel_size=1) # kernel_size 1 only changes the number of channels and doesn't mess with the spatial size
 
@@ -37,7 +37,7 @@ class FeatureFusion(torch.nn.Module):
     def __init__(self, total_ch = 384):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
         super(FeatureFusion, self).__init__()
         # total_ch = 384
-        self.gn = torch.nn.GroupNorm(3, total_ch)     # Separate 6 channels into 3 groups, how to define a appropriate number of groups & channels?
+        self.gn = torch.nn.GroupNorm(24, total_ch)     # Separate 6 channels into 3 groups, how to define a appropriate number of groups & channels?
     def forward(self, left_eye, right_eye, face):
         # layer2
         # layer 2: feature fusion: concate + group  normalization
@@ -56,6 +56,7 @@ from vit_pytorch.vit import Transformer
 class Attention(torch.nn.Module):
     """
     Attention Layer
+    seq_len = h*w (number of patch = 1, hence token = h*w), features = ch
     class input shape: (bs, ch, h, w)
     in forward, reshape to (bs, h*w, ch)
     output shape: (bs, h*w, ch)
@@ -64,11 +65,11 @@ class Attention(torch.nn.Module):
         super(Attention, self).__init__()
         self.self_att = Transformer(
                 dim = total_ch,   # if not using the total_ch, should project the input to the dim of the transformer first
-                depth = 6,
-                heads = 16,
-                dim_head = total_ch//16,  #dim//heads
-                mlp_dim = 2048,  # the hidden layer dim of the mlp (the hidden layer of the feedforward network, which is applied to each position (each token) separately and identically)
-                # dropout = 0.
+                depth = 3,
+                heads = 8,
+                dim_head = total_ch//8,  #dim//heads
+                mlp_dim = 1024,  # the hidden layer dim of the mlp (the hidden layer of the feedforward network, which is applied to each position (each token) separately and identically)
+                dropout = 0.1
                 # def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout = 0.)
         )
 
@@ -92,8 +93,8 @@ class Attention(torch.nn.Module):
 class Temporal(torch.nn.Module):
     """
     Temporal Layer
-    input shape: (bs, ch, h, w)
-    output shape: (seq_len, bs, ch)  # seq_len = h*w 
+    input shape: (bs, h*w, ch)    # ==(bs, seq_len, ch)
+    output shape: (bs, seq_len, ch)  # seq_len = h*w 
     h_n shape: (num_layers, bs, hidden_size)
     """
     def __init__(self, total_ch = 384):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
@@ -103,13 +104,13 @@ class Temporal(torch.nn.Module):
         # torch.nn.GRU(input_size, hidden_size, num_layers=1, bias=True, batch_first=False, dropout=0.0, bidirectional=False, device=None, dtype=None)
         # how to define the input_size and hidden_size?
         # test num_layers param, what does it affect?
-        self.gru = torch.nn.GRU(input_size=total_ch, 
+        self.gru = torch.nn.GRU(input_size=total_ch, # ????
                                 hidden_size=512,    # the more hidden size, the complexer memory
-                                num_layers=5,       # does this represent the number of GRU blocks? or say the number of consecutive frames we wanna consider?
+                                num_layers=2, #2 or 3       # does this represent the number of GRU blocks? or say the number of consecutive frames we wanna consider?
                                 bias=True, 
-                                batch_first=False, 
+                                batch_first=True,    # True
                                 dropout=0.0, 
-                                bidirectional=False, 
+                                bidirectional=False,   
                                 device=None, 
                                 dtype=None)
         
@@ -240,11 +241,12 @@ class WholeModel(nn.Module): ## Sequence Length=batchsize !!
             print(f"attention NaN check: {torch.isnan(Attention_map).any()}")
 
         # Reshape for GRU
-        bs, seq_len, ch = Attention_map.shape
-        Attention_map = Attention_map.reshape(seq_len, bs, ch)
+        # bs, seq_len, ch = Attention_map.shape
+        # Attention_map = Attention_map.reshape(seq_len, bs, ch) # change to (ch, bs, seq_len), or bs first (bs, ch, seq_len)?
+        # Attention_map = Attention_map.reshape(bs, ch, seq_len)
 
         # GRU
-        gru_out, _ = self.layers[3](Attention_map)
+        gru_out, _ = self.layers[3](Attention_map) # batch_first=False, so the input should be (ch, bs, seq_len)
         if (torch.isnan(gru_out).any()):
             print(f"GRU output NaN check: {torch.isnan(gru_out).any()}")
 
