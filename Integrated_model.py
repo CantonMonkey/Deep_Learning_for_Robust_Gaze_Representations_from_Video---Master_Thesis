@@ -1,5 +1,4 @@
 ## layer 1, understand strides and kernel_size concepts, we do not freeze the layers i think? maybe if there is overfitting we can freeze resnet for less training parameters
-# TODO: Ask about copying codes from documentation
 import torch
 import torch.nn as nn
 import torchvision.models as models
@@ -251,9 +250,11 @@ class WholeModel(nn.Module): ## Sequence Length=batchsize !!
             print(f"GRU output NaN check: {torch.isnan(gru_out).any()}")
 
         # GAP
-        gap = torch.mean(gru_out, dim=0)
+        #print(gru_out.shape)
+        gap = torch.mean(gru_out, dim=1)
+        #print(gap.shape)
         if (torch.isnan(gap).any()):
-            print(f"GAPP prediction NaN check: {torch.isnan(gap).any()}")
+            print(f"GAP prediction NaN check: {torch.isnan(gap).any()}")
 
         # FC layer
         pred = self.layers[4](gap)
@@ -261,6 +262,7 @@ class WholeModel(nn.Module): ## Sequence Length=batchsize !!
 
             print(f"Final prediction NaN check: {torch.isnan(pred).any()}")
 
+        print(pred.shape)
         return pred
     
     

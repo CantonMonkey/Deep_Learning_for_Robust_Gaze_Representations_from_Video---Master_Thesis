@@ -276,15 +276,15 @@ def train():
     # /data/leuven/374/vsc37415/OP/
     # D:\thesis_code\OP
     # dataset_path = "/data/leuven/374/vsc37415/OP/"
-    dataset_path = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP"
-    # dataset_path = r"C:\Users\rohan\Desktop\Master\Master Thesis\Datasets\OP"
+    #dataset_path = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP"
+    dataset_path = r"C:\Users\rohan\Desktop\Master\Master Thesis\Datasets\OP"
     # Leye_path = "/data/leuven/374/vsc37415/OP/"
     # Reye_path = ""
     # faces_path = ""
     # label_excel = "/data/leuven/374/vsc37415/data.csv"
     # label_excel = "D:/thesis_code/data.csv"
-    label_excel = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP"
-    # label_excel = r"C:\Users\rohan\Desktop\Master\Master Thesis\Datasets\OP"
+    # label_excel = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP"
+    label_excel = r"C:\Users\rohan\Desktop\Master\Master Thesis\Datasets\OP"
 
     # dataset = GazeDatasetFromPaths(dataset_path, label_excel)
     # dataloader = DataLoader(dataset, batch_size=1, shuffle=True) # shuffle true? yes, cause label is included so no issue
