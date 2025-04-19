@@ -68,7 +68,7 @@ class Attention(torch.nn.Module):
                 heads = 8,
                 dim_head = total_ch//8,  #dim//heads
                 mlp_dim = 1024,  # the hidden layer dim of the mlp (the hidden layer of the feedforward network, which is applied to each position (each token) separately and identically)
-                dropout = 0.1
+                dropout = 0.2
                 # def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout = 0.)
         )
 
@@ -163,17 +163,17 @@ class Temporal(torch.nn.Module):
         
 #         return features
 
-class FeatureExtraction(torch.nn.Module):
-    def __init__(self):
-        super(FeatureExtraction, self).__init__()
-        self.feature_extractor = ResNetFeatureExtractor()
-        self.feature_extractor.eval()
-
-    def extract_features(self, img_tensor):
-        # img_tensor = img_tensor.unsqueeze(0)  # add batch dimension, no...
-        with torch.no_grad():
-            features = self.feature_extractor(img_tensor)
-        return features
+# class FeatureExtraction(torch.nn.Module):
+#     def __init__(self):
+#         super(FeatureExtraction, self).__init__()
+#         self.feature_extractor = ResNetFeatureExtractor()
+#         self.feature_extractor.eval()
+#
+#     def extract_features(self, img_tensor):
+#         # img_tensor = img_tensor.unsqueeze(0)  # add batch dimension, no...
+#         with torch.no_grad():
+#             features = self.feature_extractor(img_tensor)
+#         return features
 
 
 
@@ -202,7 +202,7 @@ class WholeModel(nn.Module): ## Sequence Length=batchsize !!
     def __init__(self):
         super(WholeModel, self).__init__()
         self.layers= (nn.ModuleList([
-                FeatureExtraction(),
+                ResNetFeatureExtractor(),
                 FeatureFusion(),
                 Attention(),
                 Temporal(),
@@ -217,15 +217,15 @@ class WholeModel(nn.Module): ## Sequence Length=batchsize !!
 
     def forward(self, left_eye_img, right_eye_img, face_img):
         # Extract features
-        left_eye = self.layers[0].extract_features(left_eye_img)
+        left_eye = self.layers[0](left_eye_img)
         if (torch.isnan(left_eye).any()):
             print(f"left_eye feature NaN check: {torch.isnan(left_eye).any()}")
 
-        right_eye = self.layers[0].extract_features(right_eye_img)
+        right_eye = self.layers[0](right_eye_img)
         if (torch.isnan(right_eye).any()):
             print(f"right_eye feature NaN check: {torch.isnan(right_eye).any()}")
 
-        face = self.layers[0].extract_features(face_img)
+        face = self.layers[0](face_img)
         if (torch.isnan(face).any()):
             print(f"face feature NaN check: {torch.isnan(face).any()}")
 
@@ -262,7 +262,7 @@ class WholeModel(nn.Module): ## Sequence Length=batchsize !!
 
             print(f"Final prediction NaN check: {torch.isnan(pred).any()}")
 
-        print(pred.shape)
+        #print(pred.shape)
         return pred
     
     

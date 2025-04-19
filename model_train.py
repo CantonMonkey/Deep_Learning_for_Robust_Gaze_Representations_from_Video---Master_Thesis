@@ -296,8 +296,8 @@ def train():
         wandb.init(
             project="pytorch-intro",
             config={
-                "epochs": 3,
-                "batch_size": 8,
+                "epochs": 7,
+                "batch_size": 4,
                 "lr": 1e-3,
                 "dropout": random.uniform(0.01, 0.80), #trying different dropout rates
             },
@@ -332,6 +332,7 @@ def train():
         example_ct = 0  # track the number of examples seen so far
         step_ct = 0 # track the number of steps taken so far
         ##### same as     total_loss = 0.0 total_ang_error = 0.0 ?????????
+        n = 0
 
         for epoch in range(config.epochs):
             model.train()
@@ -351,16 +352,20 @@ def train():
 
 
                 optimizer.zero_grad()
-                # print("asdfasedrfacsd")
-                # print(train_loss.mean())
-                # print("asdfasedrfacsd")
-                # After backward but before optimizer step
+
+                ## Hook should be registered here
                 train_loss.mean().backward()
 
-                # Check gradients for NaN
-                for name, param in model.named_parameters():
-                    if param.grad is not None and torch.isnan(param.grad).any():
-                        print(f"NaN gradient detected in {name}")
+
+                # for param in model.parameters(): # Hook is only to catch and modify the gradients during the backward itself
+                #     param.register_hook(lambda grad: torch.where(torch.isnan(grad), torch.zeros_like(grad), grad))
+                for param in model.parameters():
+                    if(torch.isnan(param.grad).any()):
+                        param.grad = torch.where(torch.isnan(param.grad), torch.zeros_like(param.grad), param.grad) # replaces all nans in the grad to zero
+                        n = n + 1
+                        print(n)
+                        print("replacing nan with 0!!..................................")
+
 
                 optimizer.step()
 
