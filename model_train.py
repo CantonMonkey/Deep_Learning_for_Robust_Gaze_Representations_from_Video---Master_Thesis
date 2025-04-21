@@ -11,8 +11,7 @@ import random
 import math
 from PIL import Image
 import h5py
-import logging
-
+from EarlyStopping import EarlyStopping
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -288,6 +287,7 @@ def train():
     model = WholeModel().to(device)  # Load the model
     grad_nan_log = []
     counter = [0]
+    early_stopper = EarlyStopping(patience=5, min_delta=1e-3)
 
     # def make_ordered_hook(name):
     #     def hook_fn(grad):
@@ -328,7 +328,7 @@ def train():
         wandb.init(
             project="pytorch-intro",
             config={
-                "epochs": 7,
+                "epochs": 20,
                 "batch_size": 4,
                 "lr": 1e-3,
                 "dropout": random.uniform(0.3, 0.4) #trying different dropout rates
@@ -434,6 +434,9 @@ def train():
             val_metrics = {"val/val_loss": val_loss, 
                            "val/val_error": val_error}
             wandb.log({**metrics, **val_metrics})
+            if(early_stopper(val_error)):
+                print("Early stopping..................................")
+                break
 
             # Save the model checkpoint to wandb
             torch.save(model, "my_model.pt")
