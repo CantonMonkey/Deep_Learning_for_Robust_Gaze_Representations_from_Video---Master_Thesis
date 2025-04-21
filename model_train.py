@@ -189,6 +189,20 @@ def angular_error(pred_theta_phi, target_theta_phi):
     return result
 
 
+# hook_usage_counter = {}
+#
+#
+# def create_nan_guard_hook(name):
+#     def hook(grad):
+#         if torch.isnan(grad).any():
+#             print(f"[HOOK] Replaced NaNs in gradient of: {name}")
+#             hook_usage_counter[name] = hook_usage_counter.get(name, 0) + 1
+#             return torch.where(torch.isnan(grad), torch.zeros_like(grad), grad)
+#         return grad
+#
+#     return hook
+
+
 
 
 def validate_model(model, valid_dl, loss_func, log_images=False, batch_idx=0):
@@ -272,19 +286,37 @@ def train():
 
     
     model = WholeModel().to(device)  # Load the model
+    grad_nan_log = []
+    counter = [0]
+
+    # def make_ordered_hook(name):
+    #     def hook_fn(grad):
+    #         counter[0] += 1
+    #         nan_count = torch.isnan(grad).sum().item()
+    #         if nan_count > 0:
+    #             grad_nan_log.append((counter[0], name, nan_count))
+    #         return grad
+    #
+    #     return hook_fn
+
+    # # Attach to all parameters
+    # for name, param in model.named_parameters():
+    #     if param.requires_grad:
+    #         param.register_hook(make_ordered_hook(name))
 
     # /data/leuven/374/vsc37415/OP/
     # D:\thesis_code\OP
     # dataset_path = "/data/leuven/374/vsc37415/OP/"
-    #dataset_path = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP"
-    dataset_path = r"C:\Users\rohan\Desktop\Master\Master Thesis\Datasets\OP"
+    dataset_path = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP"
+    dataset_validation_path = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP-Val"
+    # dataset_path = r"C:\Users\rohan\Desktop\Master\Master Thesis\Datasets\OP"
     # Leye_path = "/data/leuven/374/vsc37415/OP/"
     # Reye_path = ""
     # faces_path = ""
     # label_excel = "/data/leuven/374/vsc37415/data.csv"
     # label_excel = "D:/thesis_code/data.csv"
-    # label_excel = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP"
-    label_excel = r"C:\Users\rohan\Desktop\Master\Master Thesis\Datasets\OP"
+    label_excel = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP"
+    # label_excel = r"C:\Users\rohan\Desktop\Master\Master Thesis\Datasets\OP"
 
     # dataset = GazeDatasetFromPaths(dataset_path, label_excel)
     # dataloader = DataLoader(dataset, batch_size=1, shuffle=True) # shuffle true? yes, cause label is included so no issue
@@ -299,7 +331,7 @@ def train():
                 "epochs": 7,
                 "batch_size": 4,
                 "lr": 1e-3,
-                "dropout": random.uniform(0.01, 0.80), #trying different dropout rates
+                "dropout": random.uniform(0.3, 0.4) #trying different dropout rates
             },
         )
 
@@ -310,7 +342,7 @@ def train():
         # combine different images from different folders
         train_dl = get_dataloader(dataset_path, label_excel, batch_size=config.batch_size, shuffle=True)
         '''!!!!!!!!!!!!'''
-        valid_dl = get_dataloader(dataset_path, label_excel, batch_size=config.batch_size, shuffle=False)   # no shuffle for validation, also 2 times batch size for faster validation?
+        valid_dl = get_dataloader(dataset_validation_path, label_excel, batch_size=config.batch_size, shuffle=False)   # no shuffle for validation, also 2 times batch size for faster validation?
         '''!!!!!!!!!!!!'''
         n_steps_per_epoch = math.ceil(len(train_dl.dataset) / config.batch_size) 
 
@@ -334,6 +366,12 @@ def train():
         ##### same as     total_loss = 0.0 total_ang_error = 0.0 ?????????
         n = 0
 
+        ## Register hooks for every model parameter
+        # for name, param in model.named_parameters():
+        #     if param.requires_grad:
+        #         param.register_hook(create_nan_guard_hook(name))
+
+
         for epoch in range(config.epochs):
             model.train()
             for step, (Leyes, Reyes, faces, labels) in enumerate(train_dl):
@@ -353,17 +391,18 @@ def train():
 
                 optimizer.zero_grad()
 
-                ## Hook should be registered here
                 train_loss.mean().backward()
+                # if grad_nan_log:
+                #     print("\n=== NaN Gradient Order ===")
+                #     for order, name, nan_count in sorted(grad_nan_log):
+                #         print(f"[{order:03}] 🚨 {name} → {nan_count} NaNs")
 
-
-                # for param in model.parameters(): # Hook is only to catch and modify the gradients during the backward itself
-                #     param.register_hook(lambda grad: torch.where(torch.isnan(grad), torch.zeros_like(grad), grad))
-                for param in model.parameters():
+                for name, param in model.named_parameters():
                     if(torch.isnan(param.grad).any()):
                         param.grad = torch.where(torch.isnan(param.grad), torch.zeros_like(param.grad), param.grad) # replaces all nans in the grad to zero
                         n = n + 1
                         print(n)
+                        print(name)
                         print("replacing nan with 0!!..................................")
 
 

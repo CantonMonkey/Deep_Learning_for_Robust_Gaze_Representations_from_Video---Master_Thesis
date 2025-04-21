@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 import torchvision.models as models
-
+import torch.nn.functional as F
 # https://flypix.ai/blog/image-recognition-algorithms/ why I choosed only first few layers for feature extraction, upto middle layers are sufficient to provide information about eyes
 # In higher layers of the network, detailed pixel information is lost whilethe high level content of the image is preserved. Clear Explanation is here(https://ai.stackexchange.com/questions/30038/why-do-we-lose-detail-of-an-image-as-we-go-deeper-into-a-convnet)
 class ResNetFeatureExtractor(nn.Module):
@@ -44,6 +44,7 @@ class FeatureFusion(torch.nn.Module):
         # total_ch = Leye[1]+Reye[1]+FaceData[1]  # total channels of the input // this is not working 
         concate = torch.cat((left_eye, right_eye, face), 1)  # dim = 0 or 1?  only channel dim changes?
         out = self.gn(concate)
+        out = F.relu(out)
         #print("FeatureFusion", out.shape)
         return out 
 
@@ -77,6 +78,7 @@ class Attention(torch.nn.Module):
         bs, c, h, w = out.shape
         x_att = out.reshape(bs, c, h * w).transpose(1, 2)   # (bs, h*w, c) --- (bs, seq_len, features)
         x_att = self.self_att(x_att)  # output shape (bs, h*w, c)
+        x_att=F.relu(x_att)
 
         #reshape the output
         # for input frames, the temporal information should be considered, how to define the input_size and hidden_size?
@@ -128,6 +130,7 @@ class Temporal(torch.nn.Module):
         #print("Temporal_start", x_att.shape, h_state)
         # h_n itself should be an input for GRU, otherwise useless, dont forget the hidden state
         out, h_n = self.gru(x_att, h_state) # read the source, there are 2 outputs, but what is h_n here? should be the hidden state of the last layer?
+        out = F.relu(out)
         # mind the coherence of the input and output of the RNN layer 
         
         #reshape the output
@@ -218,26 +221,26 @@ class WholeModel(nn.Module): ## Sequence Length=batchsize !!
     def forward(self, left_eye_img, right_eye_img, face_img):
         # Extract features
         left_eye = self.layers[0](left_eye_img)
-        if (torch.isnan(left_eye).any()):
-            print(f"left_eye feature NaN check: {torch.isnan(left_eye).any()}")
+        # if (torch.isnan(left_eye).any()):
+        #     print(f"left_eye feature NaN check: {torch.isnan(left_eye).any()}")
 
         right_eye = self.layers[0](right_eye_img)
-        if (torch.isnan(right_eye).any()):
-            print(f"right_eye feature NaN check: {torch.isnan(right_eye).any()}")
+        # if (torch.isnan(right_eye).any()):
+        #     print(f"right_eye feature NaN check: {torch.isnan(right_eye).any()}")
 
         face = self.layers[0](face_img)
-        if (torch.isnan(face).any()):
-            print(f"face feature NaN check: {torch.isnan(face).any()}")
+        # if (torch.isnan(face).any()):
+        #     print(f"face feature NaN check: {torch.isnan(face).any()}")
 
         # Fusion
         fusioned_feature = self.layers[1](left_eye, right_eye, face)
-        if (torch.isnan(fusioned_feature).any()):
-            print(f"fusion NaN check: {torch.isnan(fusioned_feature).any()}")
+        # if (torch.isnan(fusioned_feature).any()):
+        #     print(f"fusion NaN check: {torch.isnan(fusioned_feature).any()}")
 
         # Attention
         Attention_map = self.layers[2](fusioned_feature)
-        if (torch.isnan(Attention_map).any()):
-            print(f"attention NaN check: {torch.isnan(Attention_map).any()}")
+        # if (torch.isnan(Attention_map).any()):
+        #     print(f"attention NaN check: {torch.isnan(Attention_map).any()}")
 
         # Reshape for GRU
         # bs, seq_len, ch = Attention_map.shape
@@ -246,21 +249,22 @@ class WholeModel(nn.Module): ## Sequence Length=batchsize !!
 
         # GRU
         gru_out, _ = self.layers[3](Attention_map) # batch_first=False, so the input should be (ch, bs, seq_len)
-        if (torch.isnan(gru_out).any()):
-            print(f"GRU output NaN check: {torch.isnan(gru_out).any()}")
+        # if (torch.isnan(gru_out).any()):
+        #     print(f"GRU output NaN check: {torch.isnan(gru_out).any()}")
 
         # GAP
         #print(gru_out.shape)
         gap = torch.mean(gru_out, dim=1)
+        gap = F.relu(gap)
         #print(gap.shape)
-        if (torch.isnan(gap).any()):
-            print(f"GAP prediction NaN check: {torch.isnan(gap).any()}")
+        # if (torch.isnan(gap).any()):
+        #     print(f"GAP prediction NaN check: {torch.isnan(gap).any()}")
 
         # FC layer
         pred = self.layers[4](gap)
-        if(torch.isnan(pred).any()):
-
-            print(f"Final prediction NaN check: {torch.isnan(pred).any()}")
+        # if(torch.isnan(pred).any()):
+        #
+        #     print(f"Final prediction NaN check: {torch.isnan(pred).any()}")
 
         #print(pred.shape)
         return pred
