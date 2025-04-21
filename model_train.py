@@ -308,7 +308,7 @@ def train():
     # D:\thesis_code\OP
     # dataset_path = "/data/leuven/374/vsc37415/OP/"
     dataset_path = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP"
-    dataset_validation_path = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP-Val"
+    # dataset_validation_path = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP-Val"
     # dataset_path = r"C:\Users\rohan\Desktop\Master\Master Thesis\Datasets\OP"
     # Leye_path = "/data/leuven/374/vsc37415/OP/"
     # Reye_path = ""
@@ -331,7 +331,7 @@ def train():
                 "epochs": 20,
                 "batch_size": 4,
                 "lr": 1e-3,
-                "dropout": random.uniform(0.3, 0.4) #trying different dropout rates
+                "dropout": random.uniform(0.45, 0.55) #trying different dropout rates
             },
         )
 
@@ -342,7 +342,7 @@ def train():
         # combine different images from different folders
         train_dl = get_dataloader(dataset_path, label_excel, batch_size=config.batch_size, shuffle=True)
         '''!!!!!!!!!!!!'''
-        valid_dl = get_dataloader(dataset_validation_path, label_excel, batch_size=config.batch_size, shuffle=False)   # no shuffle for validation, also 2 times batch size for faster validation?
+        valid_dl = get_dataloader(dataset_path, label_excel, batch_size=config.batch_size, shuffle=False)   # no shuffle for validation, also 2 times batch size for faster validation?
         '''!!!!!!!!!!!!'''
         n_steps_per_epoch = math.ceil(len(train_dl.dataset) / config.batch_size) 
 
