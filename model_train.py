@@ -152,7 +152,10 @@ def spherical_to_cartesian(theta_phi):
     y = torch.sin(theta) * torch.sin(phi)
     z = torch.cos(theta)
 
-    result = torch.stack([x, y, z], dim=1)
+    
+    result = torch.cat([x.unsqueeze(1), y.unsqueeze(1), z.unsqueeze(1)], dim=1)
+    # result = torch.stack([x, y, z], dim=1)
+
     if (torch.isnan(result).any()):
         print(f"cartesian result NaN check: {torch.isnan(result).any()}")
 
@@ -331,7 +334,7 @@ def train():
                 "epochs": 20,
                 "batch_size": 4,
                 "lr": 1e-3,
-                "dropout": random.uniform(0.45, 0.55) #trying different dropout rates
+                "dropout": random.uniform(0.2, 0.3) #trying different dropout rates
             },
         )
 
