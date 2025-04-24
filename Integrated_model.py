@@ -3,6 +3,12 @@ import torch
 import torch.nn as nn
 import torchvision.models as models
 import torch.nn.functional as F
+import logging
+import sys
+
+import logging
+logger = logging.getLogger(__name__)
+
 # https://flypix.ai/blog/image-recognition-algorithms/ why I choosed only first few layers for feature extraction, upto middle layers are sufficient to provide information about eyes
 # In higher layers of the network, detailed pixel information is lost whilethe high level content of the image is preserved. Clear Explanation is here(https://ai.stackexchange.com/questions/30038/why-do-we-lose-detail-of-an-image-as-we-go-deeper-into-a-convnet)
 class ResNetFeatureExtractor(nn.Module):
@@ -217,56 +223,46 @@ class WholeModel(nn.Module): ## Sequence Length=batchsize !!
         # self.left_eye = self.layers[0]
         # self.right_eye = self.layers[0]
         # self.face = self.layers[0]
-
     def forward(self, left_eye_img, right_eye_img, face_img):
+        # 检查输入数据
+        logger.info(f"Input check - left_eye: min={left_eye_img.min().item()}, max={left_eye_img.max().item()}, NaN={torch.isnan(left_eye_img).any()}")
+        logger.info(f"Input check - right_eye: min={right_eye_img.min().item()}, max={right_eye_img.max().item()}, NaN={torch.isnan(right_eye_img).any()}")
+        logger.info(f"Input check - face: min={face_img.min().item()}, max={face_img.max().item()}, NaN={torch.isnan(face_img).any()}")
+        
         # Extract features
         left_eye = self.layers[0](left_eye_img)
-        # if (torch.isnan(left_eye).any()):
-        #     print(f"left_eye feature NaN check: {torch.isnan(left_eye).any()}")
+        logger.info(f"Feature extraction - left_eye: min={left_eye.min().item()}, max={left_eye.max().item()}, shape={left_eye.shape}, NaN={torch.isnan(left_eye).any()}")
 
         right_eye = self.layers[0](right_eye_img)
-        # if (torch.isnan(right_eye).any()):
-        #     print(f"right_eye feature NaN check: {torch.isnan(right_eye).any()}")
+        logger.info(f"Feature extraction - right_eye: min={right_eye.min().item()}, max={right_eye.max().item()}, shape={right_eye.shape}, NaN={torch.isnan(right_eye).any()}")
 
         face = self.layers[0](face_img)
-        # if (torch.isnan(face).any()):
-        #     print(f"face feature NaN check: {torch.isnan(face).any()}")
+        logger.info(f"Feature extraction - face: min={face.min().item()}, max={face.max().item()}, shape={face.shape}, NaN={torch.isnan(face).any()}")
 
         # Fusion
         fusioned_feature = self.layers[1](left_eye, right_eye, face)
-        # if (torch.isnan(fusioned_feature).any()):
-        #     print(f"fusion NaN check: {torch.isnan(fusioned_feature).any()}")
+        logger.info(f"Fusion: min={fusioned_feature.min().item()}, max={fusioned_feature.max().item()}, shape={fusioned_feature.shape}, NaN={torch.isnan(fusioned_feature).any()}")
 
         # Attention
         Attention_map = self.layers[2](fusioned_feature)
-        # if (torch.isnan(Attention_map).any()):
-        #     print(f"attention NaN check: {torch.isnan(Attention_map).any()}")
-
-        # Reshape for GRU
-        # bs, seq_len, ch = Attention_map.shape
-        # Attention_map = Attention_map.reshape(seq_len, bs, ch) # change to (ch, bs, seq_len), or bs first (bs, ch, seq_len)?
-        # Attention_map = Attention_map.reshape(bs, ch, seq_len)
+        logger.info(f"Attention: min={Attention_map.min().item()}, max={Attention_map.max().item()}, shape={Attention_map.shape}, NaN={torch.isnan(Attention_map).any()}")
 
         # GRU
-        gru_out, _ = self.layers[3](Attention_map) # batch_first=False, so the input should be (ch, bs, seq_len)
-        # if (torch.isnan(gru_out).any()):
-        #     print(f"GRU output NaN check: {torch.isnan(gru_out).any()}")
+        gru_out, h_n = self.layers[3](Attention_map)
+        logger.info(f"GRU output: min={gru_out.min().item()}, max={gru_out.max().item()}, shape={gru_out.shape}, NaN={torch.isnan(gru_out).any()}")
+        logger.info(f"GRU hidden: min={h_n.min().item()}, max={h_n.max().item()}, shape={h_n.shape}, NaN={torch.isnan(h_n).any()}")
 
         # GAP
-        #print(gru_out.shape)
         gap = torch.mean(gru_out, dim=1)
         gap = F.relu(gap)
-        #print(gap.shape)
-        # if (torch.isnan(gap).any()):
-        #     print(f"GAP prediction NaN check: {torch.isnan(gap).any()}")
+        logger.info(f"GAP: min={gap.min().item()}, max={gap.max().item()}, shape={gap.shape}, NaN={torch.isnan(gap).any()}")
 
         # FC layer
         pred = self.layers[4](gap)
-        # if(torch.isnan(pred).any()):
-        #
-        #     print(f"Final prediction NaN check: {torch.isnan(pred).any()}")
-
-        #print(pred.shape)
+        logger.info(f"Final prediction: min={pred.min().item()}, max={pred.max().item()}, shape={pred.shape}, NaN={torch.isnan(pred).any()}")
+        
+        # 检查极端值
+        if pred.abs().max().item() > 100:
+            logger.warning(f"Extreme values detected in predictions: {pred}")
+    
         return pred
-    
-    

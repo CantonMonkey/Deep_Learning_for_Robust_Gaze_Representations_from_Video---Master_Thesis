@@ -12,7 +12,30 @@ import math
 from PIL import Image
 import h5py
 from EarlyStopping import EarlyStopping
+import logging
+import sys
+from losses.angular import AngularLoss
+from core.gaze import pitchyaw_to_vector
+# from models.common import pitchyaw_to_vector
+from core.gaze import angular_error as np_angular_error
+import torch.nn.functional as F
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("training_debug.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Enable anomaly detection
+torch.autograd.set_detect_anomaly(True)
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+logger.info(f"Using device: {device}")
 
 
 # https://pytorch.org/tutorials/recipes/recipes/custom_dataset_transforms_loader.html
@@ -80,8 +103,8 @@ class GazeDatasetFromPaths(Dataset):
                             h5_labels = f['face_g_tobii/data'][:]
                             self.labels.extend(h5_labels)
 
-        print(f"Number of path: {len(self.Leye_imgs_path)}")
-        print(f"Number of labels: {len(self.labels)}")
+        logger.info(f"Number of path: {len(self.Leye_imgs_path)}")
+        logger.info(f"Number of labels: {len(self.labels)}")
 
 
 
@@ -134,106 +157,80 @@ def get_dataloader(folder_path, label_path, batch_size, shuffle=True):
     return loader
 
 
-# def dot_product_loss(pred, target):
-#
-#     pred = nn.functional.normalize(pred, p=2, dim=1) # Resulting vector will have the correct direction but unit vector
-#     target = nn.functional.normalize(target, p=2, dim=1)
-#     print(pred)
-#     print(target)
-#     return torch.sum(pred * target, dim=1).mean()
-def spherical_to_cartesian(theta_phi):
-    theta = theta_phi[:, 0]
-    phi = theta_phi[:, 1]
-    if(torch.isnan(theta_phi).any()):
-        print(f"theta range: min={theta.min().item()}, max={theta.max().item()}, NaN={torch.isnan(theta).any()}")
-        print(f"phi range: min={phi.min().item()}, max={phi.max().item()}, NaN={torch.isnan(phi).any()}")
-
-    x = torch.sin(theta) * torch.cos(phi)
-    y = torch.sin(theta) * torch.sin(phi)
-    z = torch.cos(theta)
-
+def spherical_to_cartesian(theta_phi):    # can be changed to models/common
+    if torch.isnan(theta_phi).any():
+        logger.warning(f"theta_phi NaN check: {torch.isnan(theta_phi).any()}")
     
-    result = torch.cat([x.unsqueeze(1), y.unsqueeze(1), z.unsqueeze(1)], dim=1)
-    # result = torch.stack([x, y, z], dim=1)
-
-    if (torch.isnan(result).any()):
-        print(f"cartesian result NaN check: {torch.isnan(result).any()}")
-
-    return result
-
-
-def angular_error(pred_theta_phi, target_theta_phi):
-    if (torch.isnan(pred_theta_phi).any() or torch.isnan(pred_theta_phi).any()):
-        print(f"pred_theta_phi NaN check: {torch.isnan(pred_theta_phi).any()}")
-        print(f"target_theta_phi NaN check: {torch.isnan(target_theta_phi).any()}")
-
-    pred_vec = spherical_to_cartesian(pred_theta_phi)
-    target_vec = spherical_to_cartesian(target_theta_phi)
-
-    pred_vec = nn.functional.normalize(pred_vec, p=2, dim=1)
-    if (torch.isnan(pred_vec).any()):
-        print(f"normalized pred_vec NaN check: {torch.isnan(pred_vec).any()}")
-
-    target_vec = nn.functional.normalize(target_vec, p=2, dim=1)
-    if (torch.isnan(target_vec).any()):
-        print(f"normalized target_vec NaN check: {torch.isnan(target_vec).any()}")
-
-    cos_sim = torch.sum(pred_vec * target_vec, dim=1)
-    if (torch.isnan(cos_sim).any()):
-        print(f"cos_sim range: min={cos_sim.min().item()}, max={cos_sim.max().item()}, NaN={torch.isnan(cos_sim).any()}")
-
-    cos_sim = torch.clamp(cos_sim, -1.0, 1.0)
-
-    result = torch.acos(cos_sim) * (180.0 / torch.pi)
-    if (torch.isnan(result).any()):
-        print(f"angular error NaN check: {torch.isnan(result).any()}")
-
-    return result
+    # recored the range of theta and phi (input)
+    logger.debug(f"theta range: {theta_phi[:, 0].min().item()} to {theta_phi[:, 0].max().item()}, NaN: {torch.isnan(theta_phi[:, 0]).any()}")
+    logger.debug(f"phi range: {theta_phi[:, 1].min().item()} to {theta_phi[:, 1].max().item()}, NaN: {torch.isnan(theta_phi[:, 1]).any()}")
+    
+    '''the inputs are pytorch tensors, so we need to convert them to numpy arrays for the function'''
+    # I guess there is a pitchtoyaw func in EVE lib for pytorch tensors directly (in angular.py ???)'''
+    theta_phi_np = theta_phi.detach().cpu().numpy() 
+    vectors_np = pitchyaw_to_vector(theta_phi_np)  # EVE lib func
+    vectors_torch = torch.from_numpy(vectors_np).to(theta_phi.device).type(theta_phi.dtype)
+    
+    # NaN check for output
+    if torch.isnan(vectors_torch).any():
+        logger.warning(f"cartesian result NaN check: {torch.isnan(vectors_torch).any()}")
+        logger.warning(f"x NaN check: {torch.isnan(vectors_torch[:, 0]).any()}")
+        logger.warning(f"y NaN check: {torch.isnan(vectors_torch[:, 1]).any()}")
+        logger.warning(f"z NaN check: {torch.isnan(vectors_torch[:, 2]).any()}")
+    
+    return vectors_torch
 
 
-# hook_usage_counter = {}
-#
-#
-# def create_nan_guard_hook(name):
-#     def hook(grad):
-#         if torch.isnan(grad).any():
-#             print(f"[HOOK] Replaced NaNs in gradient of: {name}")
-#             hook_usage_counter[name] = hook_usage_counter.get(name, 0) + 1
-#             return torch.where(torch.isnan(grad), torch.zeros_like(grad), grad)
-#         return grad
-#
-#     return hook
+def angular_error(a, b):  #losses/angular error, can be changed to directly use the lib func
+    """Differentiable PyTorch implementation of calculating angular error, using the logic in angular.py directly"""
+    a_vec = pitchyaw_to_vector(a)  # is this func the pytorch version?
+    b_vec = pitchyaw_to_vector(b)  
+    
+    # calculate cosine similarity (which is error)
+    sim = F.cosine_similarity(a_vec, b_vec, dim=1, eps=1e-8)
+    sim = F.hardtanh_(sim, min_val=-1+1e-8, max_val=1-1e-8)  # same as Anuglarloss #from losses.angular import AngularLoss
+    
+    # conver to angles
+    to_degrees = 180. / torch.pi
 
 
 
+    return torch.acos(sim) * to_degrees
 
+
+
+# Custom exception class for NaN detection
+class NaNDetectedException(Exception):
+    """Exception raised when NaN values are detected"""
+    pass
+
+
+''' some doubts'''
 def validate_model(model, valid_dl, loss_func, log_images=False, batch_idx=0):
     "Compute performance of the model on the validation dataset and log a wandb.Table"
     model.eval()
-    # val_loss = 0.0 ## we have 2
-    val_loss = 0.0  # total_loss
+    val_loss = 0.0
     total_ang_error = 0.0
 
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     with torch.inference_mode():
-        # correct = 0 # originally template is for MNIST, so this is for classification.
         for i, (Leyes, Reyes, faces, labels) in enumerate(valid_dl):
             Leyes, Reyes, faces, labels = Leyes.to(device), Reyes.to(device), faces.to(device), labels.to(device)
 
-            # Forward pass ➡
+            # Forward pass
             outputs = model(Leyes, Reyes, faces)
-            val_loss += loss_func(outputs, labels) * labels.size(0)
-
-            # # Compute accuracy and accumulate 
-            # _, predicted = torch.max(outputs.data, 1)
-            # correct += (predicted == labels).sum().item()
-            # we are going to calculate angular error, so no need to calculate accuracy (that's for classification)     
-
-            batch_error = angular_error(outputs, labels)  # angular error in degrees, base on batches 
+            
+            # If loss_func is an AngularLoss instance
+            if isinstance(loss_func, AngularLoss):
+                # val_loss += loss_func.calculate_mean_loss(outputs, labels).item() * labels.size(0)
+                val_loss += loss_func.calculate_mean_loss(outputs, labels).item() * labels.size(0)
+                batch_error = loss_func.calculate_loss(outputs, labels)  # Use calculate_loss to get the angle error of each sample
+            else:
+                val_loss += loss_func(outputs, labels).item() * labels.size(0)
+                batch_error = angular_error(outputs, labels)
+                
             total_ang_error += batch_error.sum().item()
 
-            # Log one batch of images to the dashboard, always same batch_idx.
+            # Log one batch of images
             if i == batch_idx and log_images:
                 log_image_table(Leyes, Reyes, faces, outputs, labels, outputs.softmax(dim=1))
 
@@ -241,13 +238,10 @@ def validate_model(model, valid_dl, loss_func, log_images=False, batch_idx=0):
 
 
 
-# Create a teble to compare the predicted values versus the true value
+''' some doubts'''
 def log_image_table(Leyes, Reyes, faces, predicted, labels, errors):
     "Log a wandb.Table with (img, pred, target, scores)"
-    # Create a wandb Table to log images, labels and predictions to
-    # table = wandb.Table(
-    #     columns=["Leyes", "Reyes", "faces", "pred", "target"] + [f"score_{i}" for i in range(10)]  # not this, this is for classification
-    # )
+    
     predicted = spherical_to_cartesian(predicted)
     labels = spherical_to_cartesian(labels)
 
@@ -256,73 +250,65 @@ def log_image_table(Leyes, Reyes, faces, predicted, labels, errors):
                  "target_x", "target_y", "target_z", "angular_error"]
     )
 
-    errors = angular_error(predicted, labels)  # cal errors for each sample
+    ###############################changed !!!!!!!!!!!!!!!!!!###########################
+    # gaze.py angular.py AngularLoss as 
+    ang_loss = AngularLoss()
+    ################################changed !!!!!!!!!!!!!!!!!!!!#####################
+
+    with torch.no_grad():  # gradient calc is not needed?????
+        errors = ang_loss.calculate_loss(predicted, labels)  # calc angular error
 
     for left, right, face, pred, targ, err in zip(
             Leyes.to("cpu"), Reyes.to("cpu"), faces.to("cpu"), predicted.to("cpu"), labels.to("cpu"), errors.to("cpu")
     ):
-        # img visualization in Wandblog, normalize them to 0-255
-        '''normally pytorch tensors are in the shape of (c, h, w), but wandb expects them to be in the shape of (h, w, c)'''
-        left_img = wandb.Image(
-            left.permute(1, 2, 0).numpy() * 255)  # rearrange channels to (h, w, c) and rescale to [0, 255]
+        # img visualization
+        left_img = wandb.Image(left.permute(1, 2, 0).numpy() * 255)
         right_img = wandb.Image(right.permute(1, 2, 0).numpy() * 255)
         face_img = wandb.Image(face.permute(1, 2, 0).numpy() * 255)
-
-        # table.add_data(wandb.Image(img[0].numpy() * 255), pred, targ, *prob.numpy()) ### change???
 
         # add one row of data to the table
         table.add_data(
             left_img, right_img, face_img,
-            float(pred[0]), float(pred[1]), float(pred[2]),  # predictied x,y,z
-            float(targ[0]), float(targ[1]), float(targ[2]),  # actual x,y,z
-            float(err.item())  # angular error, error is a tensor, so use item() to get the scalar value
-            # Use err.item() to get the scalar value in the tensor instead of directly using float(err)
+            float(pred[0]), float(pred[1]), float(pred[2]),
+            float(targ[0]), float(targ[1]), float(targ[2]),
+            float(err.item())
         )
 
     wandb.log({"gaze_predictions": table}, commit=False)
-    # wandb.log({"predictions_table": table}, commit=False)
 
+# Backward hook function to monitor gradients during backpropagation
+def backward_hook(module, grad_input, grad_output):
+    for g in grad_input:
+        if g is not None and torch.isnan(g).any():
+            logger.error("NaN gradient detected in backward hook")
+            raise NaNDetectedException("NaN gradient detected in backward hook")
+    return None
+
+
+# Function to check gradients for NaN values
+def check_grad_nan(grad, name):
+    if grad is not None and torch.isnan(grad).any():
+        logger.error(f"NaN gradient detected in parameter {name} during backward")
+        raise NaNDetectedException(f"NaN gradient detected in parameter {name}")
+    return grad
 
 
 def train():
-
+    logger.info("Starting training...")
     
     model = WholeModel().to(device)  # Load the model
-    grad_nan_log = []
-    counter = [0]
+    
+    # Register hooks for model parameters to detect NaN during backpropagation
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            param.register_hook(lambda grad, name=name: check_grad_nan(grad, name))
+    
     early_stopper = EarlyStopping(patience=5, min_delta=1e-3)
 
-    # def make_ordered_hook(name):
-    #     def hook_fn(grad):
-    #         counter[0] += 1
-    #         nan_count = torch.isnan(grad).sum().item()
-    #         if nan_count > 0:
-    #             grad_nan_log.append((counter[0], name, nan_count))
-    #         return grad
-    #
-    #     return hook_fn
+    
+    dataset_path = "/data/leuven/374/vsc37415/OP2/OP"
+    label_excel = "/data/leuven/374/vsc37415/OP2/OP"
 
-    # # Attach to all parameters
-    # for name, param in model.named_parameters():
-    #     if param.requires_grad:
-    #         param.register_hook(make_ordered_hook(name))
-
-    # /data/leuven/374/vsc37415/OP/
-    # D:\thesis_code\OP
-    # dataset_path = "/data/leuven/374/vsc37415/OP/"
-    dataset_path = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP"
-    # dataset_validation_path = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP-Val"
-    # dataset_path = r"C:\Users\rohan\Desktop\Master\Master Thesis\Datasets\OP"
-    # Leye_path = "/data/leuven/374/vsc37415/OP/"
-    # Reye_path = ""
-    # faces_path = ""
-    # label_excel = "/data/leuven/374/vsc37415/data.csv"
-    # label_excel = "D:/thesis_code/data.csv"
-    label_excel = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP"
-    # label_excel = r"C:\Users\rohan\Desktop\Master\Master Thesis\Datasets\OP"
-
-    # dataset = GazeDatasetFromPaths(dataset_path, label_excel)
-    # dataloader = DataLoader(dataset, batch_size=1, shuffle=True) # shuffle true? yes, cause label is included so no issue
 
     # Train your model and upload checkpoints
     # Launch 3 experiments, trying different dropout rates
@@ -331,9 +317,9 @@ def train():
         wandb.init(
             project="pytorch-intro",
             config={
-                "epochs": 20,
+                "epochs": 10,
                 "batch_size": 4,
-                "lr": 1e-3,
+                "lr": 1e-4,
                 "dropout": random.uniform(0.2, 0.3) #trying different dropout rates
             },
         )
@@ -360,85 +346,128 @@ def train():
 
         # Make the loss and optimizer
         # loss_func = nn.CrossEntropyLoss()
-        loss_func = angular_error
+        # loss_func = angular_error
+        loss_func = AngularLoss()
+
         optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
 
         # Training
         example_ct = 0  # track the number of examples seen so far
         step_ct = 0 # track the number of steps taken so far
-        ##### same as     total_loss = 0.0 total_ang_error = 0.0 ?????????
-        n = 0
-
-        ## Register hooks for every model parameter
-        # for name, param in model.named_parameters():
-        #     if param.requires_grad:
-        #         param.register_hook(create_nan_guard_hook(name))
-
 
         for epoch in range(config.epochs):
+            logger.info(f"Starting epoch {epoch+1}/{config.epochs}")
             model.train()
             for step, (Leyes, Reyes, faces, labels) in enumerate(train_dl):
-                Leyes, Reyes, faces, labels = Leyes.to(device), Reyes.to(device), faces.to(device), labels.to(device)
+                try:
+                    Leyes, Reyes, faces, labels = Leyes.to(device), Reyes.to(device), faces.to(device), labels.to(device)
 
-                outputs = model(Leyes, Reyes, faces)
-                if (torch.isnan(outputs).any()):
-                    print(f"Model outputs NaN check: {torch.isnan(outputs).any()}")
+                    # Use detect_anomaly to wrap forward and backward passes
+                    with torch.autograd.detect_anomaly():
+                        outputs = model(Leyes, Reyes, faces)
+                        if (torch.isnan(outputs).any()):
+                            logger.error(f"Model outputs NaN check: {torch.isnan(outputs).any()}")
+                            raise NaNDetectedException("NaN detected in model outputs")
 
-                train_loss = loss_func(outputs, labels)
-                if torch.isnan(train_loss).any():
-                    print(f"Loss NaN check: {torch.isnan(train_loss).any()}")
-                batch_error = angular_error(outputs, labels) # angular error in degrees, base on batches
-                if torch.isnan(batch_error).any():
-                    print(f" NaN detected in train_loss at epoch {epoch}, step {step}")
+                        # train_loss = loss_func(outputs, labels)
+                        train_loss = loss_func.calculate_mean_loss(outputs, labels)
+                        if torch.isnan(train_loss).any():
+                            logger.error(f"Loss NaN check: {torch.isnan(train_loss).any()}")
+                            raise NaNDetectedException("NaN detected in loss calculation")
+                            
+                        # batch_error = angular_error(outputs, labels) # angular error in degrees, base on batches
+                        batch_error = loss_func.calculate_loss(outputs, labels)
+                        if torch.isnan(batch_error).any():
+                            logger.error(f"NaN detected in batch error at epoch {epoch}, step {step}")
+                            raise NaNDetectedException("NaN detected in batch error calculation")
 
+                        optimizer.zero_grad()
+                        
+                        # Calculate and check if mean is NaN
+                        loss_mean = train_loss.mean()
+                        if torch.isnan(loss_mean):
+                            logger.error("NaN detected in loss.mean()")
+                            raise NaNDetectedException("NaN detected in loss.mean()")
+                        
+                        # Execute backpropagation
+                        loss_mean.backward()
+                        
+                        # Check for NaN in gradients
+                        nan_params = []
+                        for name, param in model.named_parameters():
+                            if param.grad is not None and torch.isnan(param.grad).any():
+                                nan_params.append(name)
+                                logger.error(f"NaN gradient detected in {name}")
+                                # Print parameter and gradient statistics for diagnostics
+                                if not torch.isnan(param).all():  # Ensure param is not all NaN
+                                    logger.error(f"  - Param stats: min={param.min().item()}, max={param.max().item()}, mean={param.mean().item()}")
+                                if not torch.isnan(param.grad).all():  # Ensure grad is not all NaN
+                                    logger.error(f"  - Grad stats: min={param.grad.min().item()}, max={param.grad.max().item()}, mean={param.grad.mean().item()}")
+                        
+                        # If NaN gradients detected, replace with zeros and log
+                        if nan_params:
+                            for name, param in model.named_parameters():
+                                if param.grad is not None and torch.isnan(param.grad).any():
+                                    param.grad = torch.where(torch.isnan(param.grad), torch.zeros_like(param.grad), param.grad)
+                                    logger.info(f"Replacing NaN with 0 in {name}")
+                            
+                            # Save model state for further inspection
+                            try:
+                                torch.save({
+                                    'epoch': epoch,
+                                    'step': step,
+                                    'model_state_dict': model.state_dict(),
+                                    'optimizer_state_dict': optimizer.state_dict(),
+                                }, 'model_nan_detected.pt')
+                                logger.info("Model state saved to 'model_nan_detected.pt'")
+                            except Exception as e:
+                                logger.error(f"Error saving model state: {e}")
 
-                optimizer.zero_grad()
+                        optimizer.step()
 
-                train_loss.mean().backward()
-                # if grad_nan_log:
-                #     print("\n=== NaN Gradient Order ===")
-                #     for order, name, nan_count in sorted(grad_nan_log):
-                #         print(f"[{order:03}] 🚨 {name} → {nan_count} NaNs")
+                        example_ct += len(labels)
 
-                for name, param in model.named_parameters():
-                    if(torch.isnan(param.grad).any()):
-                        param.grad = torch.where(torch.isnan(param.grad), torch.zeros_like(param.grad), param.grad) # replaces all nans in the grad to zero
-                        n = n + 1
-                        print(n)
-                        print(name)
-                        print("replacing nan with 0!!..................................")
+                        metrics = {
+                            "train/train_loss": train_loss.mean().item(),
+                            "train/angular_error": batch_error.mean().item(),
+                            "train/epoch": (step + 1 + (n_steps_per_epoch * epoch))
+                            / n_steps_per_epoch,
+                            "train/example_ct": example_ct,
+                        }
 
+                        if step + 1 < n_steps_per_epoch:
+                            wandb.log(metrics)
 
-                optimizer.step()
+                        # Periodically print training info
+                        if step % 10 == 0:
+                            logger.info(f"Epoch {epoch+1}, Step {step}: Loss = {train_loss.mean().item():.4f}, Error = {batch_error.mean().item():.4f}")
 
+                        step_ct += 1
+                
+                except NaNDetectedException as e:
+                    logger.error(f"NaN detected: {e}")
+                    # We don't exit here to maintain compatibility with original code behavior
+                    # Instead log the error and continue training as in the original
+                    
+                except Exception as e:
+                    logger.error(f"Error in training step {step} of epoch {epoch}: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    continue
 
-                # example_ct += len(images) # use imgs of labels for tracking?
-                example_ct += len(labels)
-
-                metrics = {
-                    "train/train_loss": train_loss.mean().item(),
-                    "train/angular_error": batch_error.mean().item(),
-                    "train/epoch": (step + 1 + (n_steps_per_epoch * epoch))
-                    / n_steps_per_epoch,
-                    "train/example_ct": example_ct,
-                }
-
-                if step + 1 < n_steps_per_epoch:
-                    wandb.log(metrics)
-
-                step_ct += 1
-
-            # acc?? no we dont use accuracy here, we use angular error
+            # Evaluate validation performance
             val_loss, val_error = validate_model(
                 model, valid_dl, loss_func, log_images=(epoch == (config.epochs - 1))
             )
 
             # Log train and validation metrics to wandb
             val_metrics = {"val/val_loss": val_loss, 
-                           "val/val_error": val_error}
+                          "val/val_error": val_error}
             wandb.log({**metrics, **val_metrics})
+            
+            # Early stopping check
             if(early_stopper(val_error)):
-                print("Early stopping..................................")
+                logger.info("Early stopping triggered")
                 break
 
             # Save the model checkpoint to wandb
@@ -449,9 +478,7 @@ def train():
                 aliases=[f"epoch-{epoch+1}_dropout-{round(wandb.config.dropout, 4)}"],
             )
 
-            print(
-                f"Epoch: {epoch+1}"
-            )
+            logger.info(f"Epoch: {epoch+1} completed. Val Loss: {val_loss:.4f}, Val Error: {val_error:.4f}")
 
         # If you had a test set, this is how you could log it as a Summary metric
         wandb.summary["test_Val_error"] = val_error
@@ -460,12 +487,13 @@ def train():
         wandb.finish()
 
 
-
-
-
-
 if __name__ == "__main__":
-    train()
-
-
-
+    try:
+        train()
+    except NaNDetectedException as e:
+        logger.error(f"Training terminated due to NaN detection: {e}")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Fatal error in training: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
