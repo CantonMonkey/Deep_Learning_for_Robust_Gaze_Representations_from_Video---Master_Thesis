@@ -415,10 +415,10 @@ def train():
         wandb.init(
             project="pytorch-intro",
             config={
-                "epochs": 7,
-                "batch_size": 32,
+                "epochs": 10,
+                "batch_size": 64,
                 "lr": 1e-4,
-                "dropout": random.uniform(0.2, 0.3)  # trying different dropout rates
+                "dropout": random.uniform(0.4, 0.5)  # trying different dropout rates
             },
         )
 
