@@ -56,58 +56,67 @@ class GazeDatasetFromPaths(Dataset):
             self.camera_dirs = ['l', 'r', 'c']
         else:
             self.camera_dirs = camera_dirs
-
-        # all sub folders starting with 'step' in the base path
-        self.step_folders = sorted([
+        
+        # train, test, val folders
+        self.data_folders = sorted([
             d for d in os.listdir(root_dir)
-            if os.path.isdir(os.path.join(root_dir, d)) and d.startswith('step')
+            if os.path.isdir(os.path.join(root_dir, d)) and d.startswith('train' or 'test' or 'val')
         ])
+
 
         self.Leye_imgs_path = []
         self.Reye_imgs_path = []
         self.face_imgs_path = []
         self.labels = []
 
+        for data_folder in self.data_folders:
+            data_folder_path = os.path.join(root_dir, data_folder)
+             # all sub folders starting with 'step' in the base path
+            step_folders = sorted([
+                d for d in os.listdir(data_folder_path)
+                if os.path.isdir(os.path.join(data_folder_path, d)) and d.startswith('step')
+            ])
         
-        for step_folder in self.step_folders:
-            for camera_dir in self.camera_dirs:
-                camera_path = os.path.join(root_dir, step_folder, camera_dir)  # create a cam path, l or r or c
-                # print("camera_path", camera_path)
-                label_path = os.path.join(root_dir, step_folder, camera_dir)
-                '''check if the camera path exists and contains the required folders'''
-                if os.path.exists(camera_path):
-                    if all(os.path.exists(os.path.join(camera_path, folder))
-                        for folder in
-                        ['left_eye', 'right_eye', 'face']):  # every l r c folder contains 3 sub folders
-                        '''check if folders contain images'''
-                        ''' is this still needed?'''
-                        left_images_path = os.listdir(os.path.join(camera_path, 'left_eye'))
-                        right_images_path = os.listdir(os.path.join(camera_path, 'right_eye'))
-                        face_images_path = os.listdir(os.path.join(camera_path, 'face'))
+            for step_folder in step_folders:
+                step_path = os.path.join(data_folder_path, step_folder)
+                for camera_dir in self.camera_dirs:
+                    camera_path = os.path.join(step_path, camera_dir)  # create a cam path, l or r or c
+                    # print("camera_path", camera_path)
+                    label_path = os.path.join(step_path, camera_dir)
+                    '''check if the camera path exists and contains the required folders'''
+                    if os.path.exists(camera_path):
+                        if all(os.path.exists(os.path.join(camera_path, folder))
+                            for folder in
+                            ['left_eye', 'right_eye', 'face']):  # every l r c folder contains 3 sub folders
+                            '''check if folders contain images'''
+                            ''' is this still needed?'''
+                            left_images_path = os.listdir(os.path.join(camera_path, 'left_eye'))
+                            right_images_path = os.listdir(os.path.join(camera_path, 'right_eye'))
+                            face_images_path = os.listdir(os.path.join(camera_path, 'face'))
 
-                        if left_images_path and right_images_path and face_images_path:
-                            for i in range(len(left_images_path)):
-                                self.Leye_imgs_path.append(os.path.join(camera_path, 'left_eye', left_images_path[i]))
-                                self.Reye_imgs_path.append(os.path.join(camera_path, 'right_eye', right_images_path[i]))
-                                self.face_imgs_path.append(os.path.join(camera_path, 'face', face_images_path[i]))
-                ''' how to match the label in .h5 file with the image sets?'''
-                if os.path.exists(self.label_path):
-                    # print("label_path exists", self.label_path)
-                    # self.labels = pd.read_csv(label_path, header=None).values.astype('float32') ## change to read .h5 file
-                    label_file = []
-                    for l in os.listdir(label_path):
-                        if l.endswith('.h5'):
-                            label_file.append(l)  # contai latest h5 file
-                            # print(len(label_file))
+                            if left_images_path and right_images_path and face_images_path:
+                                for i in range(len(left_images_path)):
+                                    self.Leye_imgs_path.append(os.path.join(camera_path, 'left_eye', left_images_path[i]))
+                                    self.Reye_imgs_path.append(os.path.join(camera_path, 'right_eye', right_images_path[i]))
+                                    self.face_imgs_path.append(os.path.join(camera_path, 'face', face_images_path[i]))
+                    ''' how to match the label in .h5 file with the image sets?'''
+                    if os.path.exists(self.label_path):
+                        # print("label_path exists", self.label_path)
+                        # self.labels = pd.read_csv(label_path, header=None).values.astype('float32') ## change to read .h5 file
+                        label_file = []
+                        for l in os.listdir(label_path):
+                            if l.endswith('.h5'):
+                                label_file.append(l)  # contai latest h5 file
+                                # print(len(label_file))
 
-                    if label_file:
-                        label_path_h5 = os.path.join(camera_path, label_file[0])
-                        # print("asefdvafcesrdfacdef")
-                        # print(label_path_h5)
-                        # print("asefdvafcesrdfacdef")
-                        with h5py.File(label_path_h5, 'r') as f:
-                            h5_labels = f['face_g_tobii/data'][:]
-                            self.labels.extend(h5_labels)
+                        if label_file:
+                            label_path_h5 = os.path.join(camera_path, label_file[0])
+                            # print("asefdvafcesrdfacdef")
+                            # print(label_path_h5)
+                            # print("asefdvafcesrdfacdef")
+                            with h5py.File(label_path_h5, 'r') as f:
+                                h5_labels = f['face_g_tobii/data'][:]
+                                self.labels.extend(h5_labels)
 
         logger.info(f"Number of path: {len(self.Leye_imgs_path)}")
         logger.info(f"Number of labels: {len(self.labels)}")
