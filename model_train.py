@@ -45,13 +45,12 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # https://pytorch.org/tutorials/recipes/recipes/custom_dataset_transforms_loader.html
 
 class GazeDatasetFromPaths(Dataset):
-    '''for this class, the processing of label_path might need to be changed,
-    because the label_path is a csv file, not a folder'''
 
-    def __init__(self, root_dir, label_path, transform=None, camera_dirs=None):
+    def __init__(self, root_dir, label_path, transform=None, camera_dirs=None, is_validation=False):
         self.root_dir = root_dir
         self.label_path = label_path
         self.transform = transform
+        self.is_validation = is_validation
 
         if camera_dirs is None:
             self.camera_dirs = ['l', 'r', 'c']
@@ -69,6 +68,7 @@ class GazeDatasetFromPaths(Dataset):
         self.face_imgs_path = []
         self.labels = []
 
+        
         for step_folder in self.step_folders:
             for camera_dir in self.camera_dirs:
                 camera_path = os.path.join(root_dir, step_folder, camera_dir)  # create a cam path, l or r or c
@@ -77,8 +77,8 @@ class GazeDatasetFromPaths(Dataset):
                 '''check if the camera path exists and contains the required folders'''
                 if os.path.exists(camera_path):
                     if all(os.path.exists(os.path.join(camera_path, folder))
-                           for folder in
-                           ['left_eye', 'right_eye', 'face']):  # every l r c folder contains 3 sub folders
+                        for folder in
+                        ['left_eye', 'right_eye', 'face']):  # every l r c folder contains 3 sub folders
                         '''check if folders contain images'''
                         ''' is this still needed?'''
                         left_images_path = os.listdir(os.path.join(camera_path, 'left_eye'))
@@ -111,9 +111,11 @@ class GazeDatasetFromPaths(Dataset):
 
         logger.info(f"Number of path: {len(self.Leye_imgs_path)}")
         logger.info(f"Number of labels: {len(self.labels)}")
+        
+        # save the original dataset for validation (via a reference)
+        self.original_full_dataset = self
 
     def __len__(self):
-        '''this value is the number of images in the dataset, not the number of folders, here it's calculated by the number of image sets (from the folders)'''
         return len(self.Leye_imgs_path)
 
     def __getitem__(self, idx):
@@ -138,26 +140,102 @@ class GazeDatasetFromPaths(Dataset):
         return left_img, right_img, face_img, label
 
 
-def get_dataloader(folder_path, label_path, batch_size, shuffle=True):
-    # dataset = GazeDatasetFromPaths(dataset_path, label_excel)
-    # dataloader = DataLoader(dataset, batch_size=1, shuffle=True) # shuffle true? yes, cause label is included so no issue
+def get_dataloader(folder_path, label_path, batch_size, shuffle=True, is_validation=False):
     transform = transforms.Compose([
         transforms.Resize((128, 128)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
-    dataset = GazeDatasetFromPaths(folder_path, label_path, transform=transform)
-
+    
+    dataset = GazeDatasetFromPaths(folder_path, label_path, transform=transform, is_validation=is_validation)
+    
+    ''' create a subset of the dataset for validation '''
+    # when calling get_dataloader, if "is_validation=True", create a subset of the dataset
+    if is_validation:
+        # a reference to the original dataset is saved in the dataset object itself
+        dataset.original_full_dataset = dataset
+        
+        num_subset = 128  
+        if len(dataset) > num_subset:
+            subset_indices = sorted(np.random.permutation(len(dataset))[:num_subset])
+            subset = Subset(dataset, subset_indices)
+            # reference to the original dataset for the subset
+            subset.original_full_dataset = dataset
+            dataset = subset
+            logger.info(f"Created validation subset with {len(subset)} samples from {len(subset.original_full_dataset)} total samples")
+    
     loader = torch.utils.data.DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
         pin_memory=True,
         num_workers=1,
-        drop_last=True  # added this because there is always some error at the end of epoch
+        drop_last=True if shuffle else False  # added this because there is always some error at the end of epoch # but for validation, we need all samples
     )
-
+    
     return loader
+
+def do_final_full_test(model, valid_dl, loss_func):
+    logger.info("# Now beginning full test on the complete validation dataset.")
+    logger.info("# Hold on tight, this might take a while.")
+    
+    # get the original full dataset from the validation dataloader
+    if isinstance(valid_dl.dataset, Subset) and hasattr(valid_dl.dataset, 'original_full_dataset'):
+        # if the dataset is a subset, get the original full dataset
+        full_dataset = valid_dl.dataset.original_full_dataset
+    else:
+        # if the dataset is not a subset, use the dataset directly
+        full_dataset = valid_dl.dataset
+    
+    # create a new dataloader for the full val set
+    full_loader = DataLoader(
+        full_dataset,
+        batch_size=valid_dl.batch_size,
+        shuffle=False,
+        num_workers=2,
+        pin_memory=True,
+    )
+    
+    logger.info(f"Created full validation dataloader with {len(full_dataset)} samples")
+    
+    model.eval()
+    val_loss = 0.0
+    total_ang_error = 0.0
+    samples_processed = 0
+    
+    with torch.inference_mode():
+        for i, (Leyes, Reyes, faces, labels) in enumerate(full_loader):
+            batch_size = labels.size(0)
+            
+            Leyes, Reyes, faces, labels = Leyes.to(device), Reyes.to(device), faces.to(device), labels.to(device)
+
+            # forward pass
+            outputs = model(Leyes, Reyes, faces)
+            
+            val_loss += loss_func.calculate_mean_loss(outputs, labels).item() * batch_size
+            batch_error = loss_func.calculate_loss(outputs, labels)
+            total_ang_error += batch_error.sum().item()
+            
+            samples_processed += batch_size
+            
+            # record the loss and error for each batch
+            if i == 0:
+                log_image_table(Leyes, Reyes, faces, outputs, labels, outputs.softmax(dim=1))
+    
+    final_loss = val_loss / samples_processed
+    final_error = total_ang_error / samples_processed
+    
+    logger.info(f"Full validation results - Loss: {final_loss:.4f}, Angular Error: {final_error:.4f}")
+    
+    wandb.log({
+        "final_test/loss": final_loss,
+        "final_test/angular_error": final_error
+    })
+    
+    wandb.summary["final_test_loss"] = final_loss
+    wandb.summary["final_test_angular_error"] = final_error
+    
+    return final_loss, final_error
 
 
 def spherical_to_cartesian(theta_phi):  # can be changed to models/common
@@ -316,7 +394,7 @@ def train():
     '''Tau'''
     dataset_path = "/data/leuven/374/vsc37415/OP2/OP"
     label_excel = "/data/leuven/374/vsc37415/OP2/OP"
-    validation_dataset_path = "/data/leuven/374/vsc37415/OP2/OP-Val"
+    validation_dataset_path = "/data/leuven/374/vsc37415/OP2/OP_val"
     '''Tau'''
 
 
@@ -338,12 +416,19 @@ def train():
         # Copy your config
         config = wandb.config
 
-        # Get the data
-        # combine different images from different folders
+        # # Get the data
+        # # combine different images from different folders
+        # train_dl = get_dataloader(dataset_path, label_excel, batch_size=config.batch_size, shuffle=True)
+        # '''!!!!!!!!!!!!'''
+        # valid_dl = get_dataloader(validation_dataset_path, label_excel, batch_size=config.batch_size,
+        #                           shuffle=False)  # no shuffle for validation, also 2 times batch size for faster validation?
+
         train_dl = get_dataloader(dataset_path, label_excel, batch_size=config.batch_size, shuffle=True)
-        '''!!!!!!!!!!!!'''
-        valid_dl = get_dataloader(validation_dataset_path, label_excel, batch_size=config.batch_size,
-                                  shuffle=False)  # no shuffle for validation, also 2 times batch size for faster validation?
+        valid_dl = get_dataloader(validation_dataset_path, label_excel, 
+                                 batch_size=config.batch_size,
+                                 shuffle=False,
+                                 is_validation=True)  # is_validation=True, to create a subset of the val set
+        
         '''!!!!!!!!!!!!'''
         n_steps_per_epoch = math.ceil(len(train_dl.dataset) / config.batch_size)
 
@@ -449,7 +534,7 @@ def train():
                     logger.error(traceback.format_exc())
                     continue
 
-            # Evaluate validation performance
+            # validate model after each epoch by using subset
             val_loss, val_error = validate_model(
                 model, valid_dl, loss_func, log_images=(epoch == (config.epochs - 1))
             )
@@ -474,10 +559,19 @@ def train():
 
             logger.info(f"Epoch: {epoch + 1} completed. Val Loss: {val_loss:.4f}, Val Error: {val_error:.4f}")
 
-        # If you had a test set, this is how you could log it as a Summary metric
-        wandb.summary["test_Val_error"] = val_error
+        # # If you had a test set, this is how you could log it as a Summary metric
+        # wandb.summary["test_Val_error"] = val_error
 
-        # Close your wandb run
+        # test full validation set
+        logger.info("Training completed. Starting full evaluation on the complete validation set...")
+        final_loss, final_error = do_final_full_test(model, valid_dl, loss_func)
+
+        wandb.summary["test_Val_error"] = val_error  # for subset
+        wandb.summary["test_Val_loss"] = val_loss    # for subset
+
+        wandb.summary["final_test_error"] = final_error  # for full dataset
+        wandb.summary["final_test_loss"] = final_loss    # for full dataset
+
         wandb.finish()
 
 
