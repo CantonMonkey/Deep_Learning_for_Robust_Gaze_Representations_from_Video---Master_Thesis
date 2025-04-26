@@ -16,7 +16,7 @@ import logging
 import sys
 import numpy as np
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
-from src.losses.angular import AngularLoss
+from losses.angular import AngularLoss
 # from src.core.gaze import pitchyaw_to_vector
 from models.common import pitchyaw_to_vector
 from core.gaze import angular_error as np_angular_error
@@ -214,6 +214,10 @@ def validate_model(model, valid_dl, loss_func, log_images=False, batch_idx=0):
     model.eval()
     val_loss = 0.0
     total_ang_error = 0.0
+
+    samples_processed = 0
+    max_samples = 128
+    
     subset = Subset(valid_dl, sorted(np.random.permutation(len(valid_dl))[:128]))
     print("Length of the subset of validation..............................")
     print(len(subset))
@@ -221,28 +225,31 @@ def validate_model(model, valid_dl, loss_func, log_images=False, batch_idx=0):
 
     with torch.inference_mode():
         for i, (Leyes, Reyes, faces, labels) in enumerate(subset):
+            batch_size = labels.size(0)
+            
+            # Stop when we've processed enough samples
+            if samples_processed >= max_samples:
+                break
+
             Leyes, Reyes, faces, labels = Leyes.to(device), Reyes.to(device), faces.to(device), labels.to(device)
 
             # Forward pass
             outputs = model(Leyes, Reyes, faces)
-
-            # If loss_func is an AngularLoss instance
-            if isinstance(loss_func, AngularLoss):
-                # val_loss += loss_func.calculate_mean_loss(outputs, labels).item() * labels.size(0)
-                val_loss += loss_func.calculate_mean_loss(outputs, labels).item() * labels.size(0)
-                batch_error = loss_func.calculate_loss(outputs,
-                                                       labels)  # Use calculate_loss to get the angle error of each sample
-            else:
-                val_loss += loss_func(outputs, labels).item() * labels.size(0)
-                batch_error = angular_error(outputs, labels)
+            
+            # val_loss += loss_func.calculate_mean_loss(outputs, labels).item() * labels.size(0)
+            val_loss += loss_func.calculate_mean_loss(outputs, labels).item() * labels.size(0)
+            batch_error = loss_func.calculate_loss(outputs,labels)  # Use calculate_loss to get the angle error of each sample
 
             total_ang_error += batch_error.sum().item()
-
+            
+            samples_processed += batch_size
+            
             # Log one batch of images
             if i == batch_idx and log_images:
                 log_image_table(Leyes, Reyes, faces, outputs, labels, outputs.softmax(dim=1))
 
-    return val_loss / len(valid_dl.dataset), total_ang_error / len(valid_dl.dataset)
+    # return val_loss / len(valid_dl.dataset), total_ang_error / len(valid_dl.dataset)
+    return val_loss / samples_processed, total_ang_error / samples_processed
 
 
 ''' some doubts'''
@@ -317,9 +324,19 @@ def train():
 
     early_stopper = EarlyStopping(patience=5, min_delta=1e-3)
 
-    dataset_path = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP"
-    label_excel = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP"
-    validation_dataset_path = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP-Val"
+    '''Rohan'''
+    # dataset_path = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP"
+    # label_excel = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP"
+    # validation_dataset_path = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP-Val"
+    '''Rohan'''
+
+    '''Tau'''
+    dataset_path = "/data/leuven/374/vsc37415/OP2/OP"
+    label_excel = "/data/leuven/374/vsc37415/OP2/OP"
+    validation_dataset_path = "/data/leuven/374/vsc37415/OP2/OP-Val"
+    '''Tau'''
+
+
 
     # Train your model and upload checkpoints
     # Launch 3 experiments, trying different dropout rates
