@@ -215,22 +215,8 @@ def validate_model(model, valid_dl, loss_func, log_images=False, batch_idx=0):
     val_loss = 0.0
     total_ang_error = 0.0
 
-    samples_processed = 0
-    max_samples = 128
-    
-    subset = Subset(valid_dl, sorted(np.random.permutation(len(valid_dl))[:128]))
-    print("Length of the subset of validation..............................")
-    print(len(subset))
-    print("Length of the subset of validation..............................")
-
     with torch.inference_mode():
-        for i, (Leyes, Reyes, faces, labels) in enumerate(subset):
-            batch_size = labels.size(0)
-            
-            # Stop when we've processed enough samples
-            if samples_processed >= max_samples:
-                break
-
+        for i, (Leyes, Reyes, faces, labels) in enumerate(valid_dl):
             Leyes, Reyes, faces, labels = Leyes.to(device), Reyes.to(device), faces.to(device), labels.to(device)
 
             # Forward pass
@@ -238,18 +224,15 @@ def validate_model(model, valid_dl, loss_func, log_images=False, batch_idx=0):
             
             # val_loss += loss_func.calculate_mean_loss(outputs, labels).item() * labels.size(0)
             val_loss += loss_func.calculate_mean_loss(outputs, labels).item() * labels.size(0)
-            batch_error = loss_func.calculate_loss(outputs,labels)  # Use calculate_loss to get the angle error of each sample
-
+            batch_error = loss_func.calculate_loss(outputs, labels)  # Use calculate_loss to get the angle error of each sample
+                
             total_ang_error += batch_error.sum().item()
-            
-            samples_processed += batch_size
-            
+
             # Log one batch of images
             if i == batch_idx and log_images:
                 log_image_table(Leyes, Reyes, faces, outputs, labels, outputs.softmax(dim=1))
 
-    # return val_loss / len(valid_dl.dataset), total_ang_error / len(valid_dl.dataset)
-    return val_loss / samples_processed, total_ang_error / samples_processed
+    return val_loss / len(valid_dl.dataset), total_ang_error / len(valid_dl.dataset)
 
 
 ''' some doubts'''
