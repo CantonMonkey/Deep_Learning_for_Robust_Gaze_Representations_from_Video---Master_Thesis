@@ -6,6 +6,11 @@ import torch.nn.functional as F
 import logging
 import sys
 
+'''feature fusion'''
+from fusion import AFF, iAFF, DAF, MS_CAM
+from aff_resnet import resnet18 as aff_resnet18
+''''''
+
 import logging
 logger = logging.getLogger(__name__)
 
@@ -21,7 +26,11 @@ class ResNetFeatureExtractor(nn.Module):
         self.feature_extractor[-1][0].conv1.stride = (1, 1) # normally resnet has stride = 2 in layer 3 this will downsample from 8x8 to 4x4. This is to avoid this. More spatil features are preserved
         self.feature_extractor[-1][0].downsample[0].stride = (1, 1) 
 
-        self.reduce_channels = nn.Conv2d(256, 128, kernel_size=1) # kernel_size 1 only changes the number of channels and doesn't mess with the spatial size
+        self.reduce_channels = nn.Sequential(
+                                            nn.Conv2d(256, 128, kernel_size=1),
+                                            nn.BatchNorm2d(128),
+                                            nn.ReLU()
+                                            ) # kernel_size 1 only changes the number of channels and doesn't mess with the spatial size
 
 
     def forward(self, x):
@@ -32,27 +41,63 @@ class ResNetFeatureExtractor(nn.Module):
 
 
 
+class ResNetFeatureExtractor2(nn.Module):
+    def __init__(self, fuse_type='AFF'):
+        super(ResNetFeatureExtractor2, self).__init__()  
+        resnet = aff_resnet18(fuse_type=fuse_type, small_input=True)
+        self.feature_extractor = nn.Sequential(*list(resnet.children())[:-3])
+        
+        if hasattr(self.feature_extractor[-1][0], 'conv1'):
+            self.feature_extractor[-1][0].conv1.stride = (1, 1)
+        if hasattr(self.feature_extractor[-1][0], 'downsample') and self.feature_extractor[-1][0].downsample is not None:
+            self.feature_extractor[-1][0].downsample[0].stride = (1, 1)
+        
+        self.reduce_channels = nn.Sequential(
+            nn.Conv2d(256, 128, kernel_size=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU()
+        )
+
+    def forward(self, x):
+        x = self.feature_extractor(x)  
+        x = self.reduce_channels(x)   
+        return x
+
+
+
+# class FeatureFusion(torch.nn.Module):
+#     """
+#     Feature Fusion Layer
+#     input shape: (bs, ch, h, w)
+#     output shape: (bs, ch, h, w)
+#     """
+#     def __init__(self, total_ch = 384):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
+#         super(FeatureFusion, self).__init__()
+#         # total_ch = 384
+#         self.gn = torch.nn.GroupNorm(24, total_ch)     # Separate 6 channels into 3 groups, how to define a appropriate number of groups & channels?
+#     def forward(self, left_eye, right_eye, face):
+#         # layer2
+#         # layer 2: feature fusion: concate + group  normalization
+#         # self.concate = torch.cat((x, x, x), 0) // not needed here, only in forward
+#         # total_ch = Leye[1]+Reye[1]+FaceData[1]  # total channels of the input // this is not working 
+#         concate = torch.cat((left_eye, right_eye, face), 1)  # dim = 0 or 1?  only channel dim changes?
+#         out = self.gn(concate)
+#         out = F.relu(out)
+#         #print("FeatureFusion", out.shape)
+#         return out 
 
 class FeatureFusion(torch.nn.Module):
-    """
-    Feature Fusion Layer
-    input shape: (bs, ch, h, w)
-    output shape: (bs, ch, h, w)
-    """
-    def __init__(self, total_ch = 384):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
+    def __init__(self, total_ch=384):
         super(FeatureFusion, self).__init__()
-        # total_ch = 384
-        self.gn = torch.nn.GroupNorm(24, total_ch)     # Separate 6 channels into 3 groups, how to define a appropriate number of groups & channels?
+        self.gn = torch.nn.GroupNorm(24, total_ch)
+        self.channel_attention = MS_CAM(channels=total_ch)
+            
     def forward(self, left_eye, right_eye, face):
-        # layer2
-        # layer 2: feature fusion: concate + group  normalization
-        # self.concate = torch.cat((x, x, x), 0) // not needed here, only in forward
-        # total_ch = Leye[1]+Reye[1]+FaceData[1]  # total channels of the input // this is not working 
-        concate = torch.cat((left_eye, right_eye, face), 1)  # dim = 0 or 1?  only channel dim changes?
+        concate = torch.cat((left_eye, right_eye, face), 1)
         out = self.gn(concate)
         out = F.relu(out)
-        #print("FeatureFusion", out.shape)
-        return out 
+        out = self.channel_attention(out)
+        return out
 
 # from vit_pytorch import ViT
 # https://github.com/lucidrains/vit-pytorch/blob/main/vit_pytorch/vit.py
@@ -71,11 +116,11 @@ class Attention(torch.nn.Module):
         super(Attention, self).__init__()
         self.self_att = Transformer(
                 dim = total_ch,   # if not using the total_ch, should project the input to the dim of the transformer first
-                depth = 3,
+                depth = 2,
                 heads = 8,
                 dim_head = total_ch//8,  #dim//heads
                 mlp_dim = 1024,  # the hidden layer dim of the mlp (the hidden layer of the feedforward network, which is applied to each position (each token) separately and identically)
-                dropout = 0.2
+                dropout = 0.4
                 # def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout = 0.)
         )
 
@@ -116,7 +161,7 @@ class Temporal(torch.nn.Module):
                                 num_layers=2, #2 or 3       # does this represent the number of GRU blocks? or say the number of consecutive frames we wanna consider?
                                 bias=True, 
                                 batch_first=True,    # True
-                                dropout=0.0, 
+                                dropout=0.3, 
                                 bidirectional=False,   
                                 device=None, 
                                 dtype=None)
@@ -197,13 +242,21 @@ class GazePrediction(nn.Module):
     """
     def __init__(self, input_dim, num_classes):
         super(GazePrediction, self).__init__()
-        self.fc = nn.Linear(input_dim, num_classes)
+        # self.fc = nn.Linear(input_dim, num_classes)
+        self.dropout = nn.Dropout(0.3)
+        self.fc1 = nn.Linear(input_dim, 128)
+        self.fc2 = nn.Linear(128, num_classes)
     
     def forward(self, x):
         #print("enter FC layer")
         # Ensure x is flat going into the FC layer (it should already be flat if coming from GAP)
         x = x.view(x.size(0), -1)  # Flatten to [bs, features]
-        x = self.fc(x)
+
+        x = self.fc1(x)
+        x = F.relu(x)
+        x = self.dropout(x)
+        x = self.fc2(x)
+        # x = self.fc(x)
         #print("GazePrediction", x.shape)
         return x
 
@@ -211,6 +264,7 @@ class WholeModel(nn.Module): ## Sequence Length=batchsize !!
     def __init__(self):
         super(WholeModel, self).__init__()
         self.layers= (nn.ModuleList([
+                # ResNetFeatureExtractor2(fuse_type='AFF'),  # AFF / iAFF / DAF
                 ResNetFeatureExtractor(),
                 FeatureFusion(),
                 Attention(),

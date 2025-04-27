@@ -22,6 +22,8 @@ from models.common import pitchyaw_to_vector
 from core.gaze import angular_error as np_angular_error
 import torch.nn.functional as F
 
+
+
 # logging
 logging.basicConfig(
     level=logging.INFO,
@@ -60,7 +62,7 @@ class GazeDatasetFromPaths(Dataset):
         # train, test, val folders
         self.data_folders = sorted([
             d for d in os.listdir(root_dir)
-            if os.path.isdir(os.path.join(root_dir, d)) and d.startswith('train' or 'test' or 'val')
+            if os.path.isdir(os.path.join(root_dir, d)) and (d.startswith('train') or d.startswith('test') or d.startswith('val'))
         ])
 
 
@@ -178,7 +180,7 @@ def get_dataloader(folder_path, label_path, batch_size, shuffle=True, is_validat
         batch_size=batch_size,
         shuffle=shuffle,
         pin_memory=True,
-        num_workers=1,
+        num_workers=8,
         drop_last=True if shuffle else False  # added this because there is always some error at the end of epoch # but for validation, we need all samples
     )
     
@@ -201,7 +203,7 @@ def do_final_full_test(model, valid_dl, loss_func):
         full_dataset,
         batch_size=valid_dl.batch_size,
         shuffle=False,
-        num_workers=2,
+        num_workers=8,
         pin_memory=True,
     )
     
@@ -404,6 +406,10 @@ def train():
     dataset_path = "/data/leuven/374/vsc37415/OP2/OP"
     label_excel = "/data/leuven/374/vsc37415/OP2/OP"
     validation_dataset_path = "/data/leuven/374/vsc37415/OP2/OP_val"
+    
+    dataset_path = "/scratch/leuven/374/vsc37415/EVE_large/train"
+    label_excel = "/scratch/leuven/374/vsc37415/EVE_large/train"
+    validation_dataset_path = "/scratch/leuven/374/vsc37415/EVE_large/val"
     '''Tau'''
 
 
@@ -416,7 +422,7 @@ def train():
             project="pytorch-intro",
             config={
                 "epochs": 10,
-                "batch_size": 64,
+                "batch_size": 128,
                 "lr": 1e-4,
                 "dropout": random.uniform(0.4, 0.5)  # trying different dropout rates
             },
@@ -454,7 +460,8 @@ def train():
         # loss_func = angular_error
         loss_func = AngularLoss()
 
-        optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
+        # optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
+        optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, weight_decay=1e-4)  # added weight decay
 
         # Training
         example_ct = 0  # track the number of examples seen so far
