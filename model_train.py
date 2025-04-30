@@ -1,11 +1,10 @@
 import torch
-from Integrated_model import WholeModel
-# import torch.utils.data as data
+from Integrated_model import WholeModel, SequentialWholeModel
 import os
 import pandas as pd
 from torch.utils.data import Dataset, DataLoader, Subset
 import torch.nn as nn
-import wandb  # https://docs.wandb.ai/tutorials/experiments/
+import wandb
 import torchvision.transforms as transforms
 import random
 import math
@@ -15,16 +14,13 @@ from EarlyStopping import EarlyStopping
 import logging
 import sys
 import numpy as np
+import gc
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 from losses.angular import AngularLoss
-# from src.core.gaze import pitchyaw_to_vector
 from models.common import pitchyaw_to_vector
 from core.gaze import angular_error as np_angular_error
 import torch.nn.functional as F
 
-
-
-# logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -35,208 +31,328 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Enable anomaly detection
-# torch.autograd.set_detect_anomaly(True)
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-# logger.info(f"Using device: {device}")
+def salvage_memory():
+    """Attempt to free available memory"""
+    torch.cuda.empty_cache()
+    gc.collect()
 
 
-# https://pytorch.org/tutorials/recipes/recipes/custom_dataset_transforms_loader.html
-
-class GazeDatasetFromPaths(Dataset):
-
-    def __init__(self, root_dir, label_path, transform=None, camera_dirs=None, is_validation=False):
+# Sequence dataset class
+class GazeSequenceDataset(Dataset):
+    def __init__(self, root_dir, label_path, transform=None, camera_dirs=None, is_validation=False, 
+                 sequence_length=30, max_steps_per_folder=10):
         self.root_dir = root_dir
         self.label_path = label_path
         self.transform = transform
         self.is_validation = is_validation
+        self.sequence_length = sequence_length  # sequence length
 
         if camera_dirs is None:
             self.camera_dirs = ['l', 'r', 'c']
         else:
             self.camera_dirs = camera_dirs
         
-        # train, test, val folders
+        # Get data folders
         self.data_folders = sorted([
             d for d in os.listdir(root_dir)
             if os.path.isdir(os.path.join(root_dir, d)) and (d.startswith('train') or d.startswith('test') or d.startswith('val'))
         ])
-
-
-        self.Leye_imgs_path = []
-        self.Reye_imgs_path = []
-        self.face_imgs_path = []
-        self.labels = []
-
+        
+        # Filter folders
+        if not is_validation:
+            self.data_folders = [d for d in self.data_folders if d.startswith('train')]
+        else:
+            self.data_folders = [d for d in self.data_folders if d.startswith('val')]
+            
+        logger.info(f"Data folder used: {self.data_folders}")
+        
+        # Store sequence information
+        self.sequences = []
+        
+        # Temporarily store all frame paths and labels
+        self.all_frames = {}
+        
+        # Extract sequences from data folders
         for data_folder in self.data_folders:
             data_folder_path = os.path.join(root_dir, data_folder)
-             # all sub folders starting with 'step' in the base path
+            # Get step folders
             step_folders = sorted([
                 d for d in os.listdir(data_folder_path)
                 if os.path.isdir(os.path.join(data_folder_path, d)) and d.startswith('step')
             ])
-        
+            
+            # Limit the number of steps
+            if len(step_folders) > max_steps_per_folder:
+                random.shuffle(step_folders)
+                step_folders = step_folders[:max_steps_per_folder]
+                logger.info(f"Limit the number of steps used in the folder {data_folder} to {max_steps_per_folder}")
+            
+            # Process each step folder
             for step_folder in step_folders:
                 step_path = os.path.join(data_folder_path, step_folder)
+                
+                # Process each camera view
                 for camera_dir in self.camera_dirs:
-                    camera_path = os.path.join(step_path, camera_dir)  # create a cam path, l or r or c
-                    # print("camera_path", camera_path)
-                    label_path = os.path.join(step_path, camera_dir)
-                    '''check if the camera path exists and contains the required folders'''
-                    if os.path.exists(camera_path):
-                        if all(os.path.exists(os.path.join(camera_path, folder))
-                            for folder in
-                            ['left_eye', 'right_eye', 'face']):  # every l r c folder contains 3 sub folders
-                            '''check if folders contain images'''
-                            ''' is this still needed?'''
-                            left_images_path = os.listdir(os.path.join(camera_path, 'left_eye'))
-                            right_images_path = os.listdir(os.path.join(camera_path, 'right_eye'))
-                            face_images_path = os.listdir(os.path.join(camera_path, 'face'))
-
-                            if left_images_path and right_images_path and face_images_path:
-                                for i in range(len(left_images_path)):
-                                    self.Leye_imgs_path.append(os.path.join(camera_path, 'left_eye', left_images_path[i]))
-                                    self.Reye_imgs_path.append(os.path.join(camera_path, 'right_eye', right_images_path[i]))
-                                    self.face_imgs_path.append(os.path.join(camera_path, 'face', face_images_path[i]))
-                    ''' how to match the label in .h5 file with the image sets?'''
-                    if os.path.exists(self.label_path):
-                        # print("label_path exists", self.label_path)
-                        # self.labels = pd.read_csv(label_path, header=None).values.astype('float32') ## change to read .h5 file
-                        label_file = []
-                        for l in os.listdir(label_path):
-                            if l.endswith('.h5'):
-                                label_file.append(l)  # contai latest h5 file
-                                # print(len(label_file))
-
-                        if label_file:
-                            label_path_h5 = os.path.join(camera_path, label_file[0])
-                            # print("asefdvafcesrdfacdef")
-                            # print(label_path_h5)
-                            # print("asefdvafcesrdfacdef")
-                            with h5py.File(label_path_h5, 'r') as f:
-                                h5_labels = f['face_g_tobii/data'][:]
-                                self.labels.extend(h5_labels)
-
-        logger.info(f"Number of path: {len(self.Leye_imgs_path)}")
-        logger.info(f"Number of labels: {len(self.labels)}")
+                    camera_path = os.path.join(step_path, camera_dir)
+                    
+                    # Check if the path is valid
+                    if not os.path.exists(camera_path):
+                        continue
+                    
+                    # Check if necessary subfolders exist
+                    if not all(os.path.exists(os.path.join(camera_path, folder)) 
+                              for folder in ['left_eye', 'right_eye', 'face']):
+                        continue
+                    
+                    # Read image paths
+                    left_images = sorted(os.listdir(os.path.join(camera_path, 'left_eye')))
+                    right_images = sorted(os.listdir(os.path.join(camera_path, 'right_eye')))
+                    face_images = sorted(os.listdir(os.path.join(camera_path, 'face')))
+                    
+                    if not (left_images and right_images and face_images):
+                        continue
+                    
+                    # Read labels
+                    label_files = [l for l in os.listdir(camera_path) if l.endswith('.h5')]
+                    if not label_files:
+                        continue
+                    
+                    label_path_h5 = os.path.join(camera_path, label_files[0])
+                    try:
+                        with h5py.File(label_path_h5, 'r') as f:
+                            labels = f['face_g_tobii/data'][:]
+                    except:
+                        continue
+                    
+                    if len(labels) != len(left_images):
+                        continue
+                    
+                    # Create sequence
+                    sequence_id = f"{data_folder}_{step_folder}_{camera_dir}"
+                    self.all_frames[sequence_id] = {
+                        'left_eye_paths': [os.path.join(camera_path, 'left_eye', img) for img in left_images],
+                        'right_eye_paths': [os.path.join(camera_path, 'right_eye', img) for img in right_images],
+                        'face_paths': [os.path.join(camera_path, 'face', img) for img in face_images],
+                        'labels': labels
+                    }
+                    
+                    # Split the sequence into fixed-length segments
+                    num_frames = len(left_images)
+                    for seq_start in range(0, num_frames, self.sequence_length):
+                        seq_end = min(seq_start + self.sequence_length, num_frames)
+                        if seq_end - seq_start >= 5:  # need at least 5 frames
+                            self.sequences.append({
+                                'sequence_id': sequence_id,
+                                'start_idx': seq_start,
+                                'end_idx': seq_end
+                            })
         
-        # save the original dataset for validation (via a reference)
+        logger.info(f"Total sequences: {len(self.sequences)}")
         self.original_full_dataset = self
-
+    
     def __len__(self):
-        return len(self.Leye_imgs_path)
+        return len(self.sequences)
 
     def __getitem__(self, idx):
-        '''remember, step_folder specifies the l r c cams, and camera_dir specifies the left_eye, right_eye, face folders'''
-        # step_folder, camera_dir = self.image_sets[idx]
-        # folder_path = os.path.join(self.root_dir, step_folder, camera_dir)
-        ''' HERE!!!!!'''
-        left_path = self.Leye_imgs_path[idx]
-        right_path = self.Reye_imgs_path[idx]
-        face_path = self.face_imgs_path[idx]
-        label = torch.tensor(self.labels[idx], dtype=torch.float32)
+        """Return a complete sequence"""
+        seq = self.sequences[idx]
+        sequence_id = seq['sequence_id']
+        start_idx = seq['start_idx']
+        end_idx = seq['end_idx']
+        
+        # Get sequence data
+        sequence_data = self.all_frames[sequence_id]
+        
+        # Extract paths and labels for this sequence
+        left_eye_paths = sequence_data['left_eye_paths'][start_idx:end_idx]
+        right_eye_paths = sequence_data['right_eye_paths'][start_idx:end_idx]
+        face_paths = sequence_data['face_paths'][start_idx:end_idx]
+        labels = sequence_data['labels'][start_idx:end_idx]
+        
+        # Prepare lists to store sequence data
+        left_seq = []
+        right_seq = []
+        face_seq = []
+        labels_seq = []
+        
+        # Load each frame in the sequence
+        for i in range(len(left_eye_paths)):
+            # Load images
+            left_img = Image.open(left_eye_paths[i]).convert("RGB")
+            right_img = Image.open(right_eye_paths[i]).convert("RGB")
+            face_img = Image.open(face_paths[i]).convert("RGB")
+            
+            # Apply transforms
+            if self.transform:
+                left_img = self.transform(left_img)
+                right_img = self.transform(right_img)
+                face_img = self.transform(face_img)
+            
+            # Add to sequence
+            left_seq.append(left_img)
+            right_seq.append(right_img)
+            face_seq.append(face_img)
+            labels_seq.append(torch.tensor(labels[i], dtype=torch.float32))
+        
+        # Convert to tensors
+        left_seq = torch.stack(left_seq)
+        right_seq = torch.stack(right_seq)
+        face_seq = torch.stack(face_seq)
+        labels_seq = torch.stack(labels_seq)
+        
+        # Create validity mask (assuming all frames are valid)
+        validity = torch.ones(len(left_seq), dtype=torch.bool)
+        
+        return {
+            'left_eye': left_seq,         # [seq_len, C, H, W]
+            'right_eye': right_seq,       # [seq_len, C, H, W]
+            'face': face_seq,             # [seq_len, C, H, W]
+            'gaze': labels_seq,           # [seq_len, 2]
+            'gaze_validity': validity     # [seq_len]
+        }
 
-        left_img = Image.open(left_path).convert("RGB")
-        right_img = Image.open(right_path).convert("RGB")
-        face_img = Image.open(face_path).convert("RGB")
-
-        if self.transform:
-            left_img = self.transform(left_img)
-            right_img = self.transform(right_img)
-            face_img = self.transform(face_img)
-
-        return left_img, right_img, face_img, label
-
-
-def get_dataloader(folder_path, label_path, batch_size, shuffle=True, is_validation=False):
+# Get sequence data loader
+def get_sequence_dataloader(folder_path, label_path, batch_size, sequence_length=30,
+                           shuffle=True, is_validation=False, num_workers=4, max_steps_per_folder=10):
+    """Create sequence data loader"""
     transform = transforms.Compose([
         transforms.Resize((128, 128)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
     
-    dataset = GazeDatasetFromPaths(folder_path, label_path, transform=transform, is_validation=is_validation)
+    dataset = GazeSequenceDataset(
+        folder_path, 
+        label_path, 
+        transform=transform, 
+        is_validation=is_validation,
+        sequence_length=sequence_length,
+        max_steps_per_folder=max_steps_per_folder
+    )
     
-    ''' create a subset of the dataset for validation '''
-    # when calling get_dataloader, if "is_validation=True", create a subset of the dataset
+    # Create subset for validation set
     if is_validation:
-        # a reference to the original dataset is saved in the dataset object itself
         dataset.original_full_dataset = dataset
         
-        num_subset = 128  
+        num_subset = 16  # reduce validation subset size
         if len(dataset) > num_subset:
             subset_indices = sorted(np.random.permutation(len(dataset))[:num_subset])
             subset = Subset(dataset, subset_indices)
-            # reference to the original dataset for the subset
             subset.original_full_dataset = dataset
             dataset = subset
-            logger.info(f"Created validation subset with {len(subset)} samples from {len(subset.original_full_dataset)} total samples")
+            logger.info(f"Created validation subset with {len(subset)} sequences")
     
-    loader = torch.utils.data.DataLoader(
+    loader = DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
         pin_memory=True,
-        num_workers=8,
-        drop_last=True if shuffle else False  # added this because there is always some error at the end of epoch # but for validation, we need all samples
+        num_workers=num_workers,
+        drop_last=True if shuffle else False
     )
     
     return loader
 
-def do_final_full_test(model, valid_dl, loss_func):
-    logger.info("# Now beginning full test on the complete validation dataset.")
-    logger.info("# Hold on tight, this might take a while.")
+
+def validate_sequence_model(model, valid_dl, loss_func):
+    """Evaluate sequence model on validation set"""
+    model.eval()
+    val_loss = 0.0
+    total_ang_error = 0.0
+    total_samples = 0
     
-    # get the original full dataset from the validation dataloader
+    with torch.inference_mode():
+        for batch_data in valid_dl:
+            # Get batch data
+            left_eyes = batch_data['left_eye'].to(device, non_blocking=True)     # [B, T, C, H, W]
+            right_eyes = batch_data['right_eye'].to(device, non_blocking=True)   # [B, T, C, H, W]
+            faces = batch_data['face'].to(device, non_blocking=True)             # [B, T, C, H, W]
+            labels = batch_data['gaze'].to(device, non_blocking=True)           # [B, T, 2]
+            labels_validity = batch_data['gaze_validity'].to(device, non_blocking=True)  # [B, T]
+            
+            # Forward pass
+            outputs = model(left_eyes, right_eyes, faces)  # [B, T, 2]
+            
+            # Prepare reference dictionary
+            reference_dict = {
+                'gaze': labels,
+                'gaze_validity': labels_validity
+            }
+            
+            # Calculate loss using calculate_mean_loss - UPDATED
+            batch_loss = loss_func.calculate_mean_loss(outputs, 'gaze', reference_dict)
+            val_loss += batch_loss.item() * outputs.size(0)
+            
+            # Calculate angular error with calculate_loss - UPDATED
+            batch_error = loss_func.calculate_loss(outputs, 'gaze', reference_dict)
+            total_ang_error += batch_error.sum().item()
+            
+            total_samples += outputs.size(0)
+    
+    return val_loss / total_samples, total_ang_error / total_samples
+
+
+def do_final_full_test(model, valid_dl, loss_func):
+    """Test sequence model on the full validation dataset"""
+    logger.info("# Starting validating on the full validation dataset...")
+    
+    # Get original complete dataset
     if isinstance(valid_dl.dataset, Subset) and hasattr(valid_dl.dataset, 'original_full_dataset'):
-        # if the dataset is a subset, get the original full dataset
         full_dataset = valid_dl.dataset.original_full_dataset
     else:
-        # if the dataset is not a subset, use the dataset directly
         full_dataset = valid_dl.dataset
     
-    # create a new dataloader for the full val set
+    # Create new data loader for the complete dataset
     full_loader = DataLoader(
         full_dataset,
-        batch_size=valid_dl.batch_size,
+        batch_size=4,  # reduce batch size to fit GPU memory
         shuffle=False,
-        num_workers=8,
+        num_workers=4,
         pin_memory=True,
     )
     
-    logger.info(f"Created full validation dataloader with {len(full_dataset)} samples")
+    logger.info(f"Create a full validation data loader containing {len(full_dataset)} sequences")
     
     model.eval()
     val_loss = 0.0
     total_ang_error = 0.0
-    samples_processed = 0
+    total_samples = 0
     
     with torch.inference_mode():
-        for i, (Leyes, Reyes, faces, labels) in enumerate(full_loader):
-            batch_size = labels.size(0)
+        for batch_data in full_loader:
+            # Get batch data
+            left_eyes = batch_data['left_eye'].to(device, non_blocking=True)
+            right_eyes = batch_data['right_eye'].to(device, non_blocking=True)
+            faces = batch_data['face'].to(device, non_blocking=True)
+            labels = batch_data['gaze'].to(device, non_blocking=True)
+            labels_validity = batch_data['gaze_validity'].to(device, non_blocking=True)
             
-            Leyes, Reyes, faces, labels = Leyes.to(device), Reyes.to(device), faces.to(device), labels.to(device)
-
-            # forward pass
-            outputs = model(Leyes, Reyes, faces)
+            # Forward pass
+            outputs = model(left_eyes, right_eyes, faces)
             
-            val_loss += loss_func.calculate_mean_loss(outputs, labels).item() * batch_size
-            batch_error = loss_func.calculate_loss(outputs, labels)
+            # Prepare reference dictionary
+            reference_dict = {
+                'gaze': labels,
+                'gaze_validity': labels_validity
+            }
+            
+            # Calculate loss using calculate_mean_loss - UPDATED
+            batch_loss = loss_func.calculate_mean_loss(outputs, 'gaze', reference_dict)
+            val_loss += batch_loss.item() * outputs.size(0)
+            
+            # Calculate angular error using calculate_loss - UPDATED
+            batch_error = loss_func.calculate_loss(outputs, 'gaze', reference_dict)
             total_ang_error += batch_error.sum().item()
             
-            samples_processed += batch_size
-            
-            # record the loss and error for each batch
-            if i == 0:
-                log_image_table(Leyes, Reyes, faces, outputs, labels, outputs.softmax(dim=1))
+            total_samples += outputs.size(0)
     
-    final_loss = val_loss / samples_processed
-    final_error = total_ang_error / samples_processed
+    final_loss = val_loss / total_samples
+    final_error = total_ang_error / total_samples
     
-    logger.info(f"Full validation results - Loss: {final_loss:.4f}, Angular Error: {final_error:.4f}")
+    logger.info(f"Full verification results - loss: {final_loss:.4f}, angular error: {final_error:.4f} degrees")
     
     wandb.log({
         "final_test/loss": final_loss,
@@ -248,357 +364,272 @@ def do_final_full_test(model, valid_dl, loss_func):
     
     return final_loss, final_error
 
-
-def spherical_to_cartesian(theta_phi):  # can be changed to models/common
-    if torch.isnan(theta_phi).any():
-        logger.warning(f"theta_phi NaN check: {torch.isnan(theta_phi).any()}")
-
-    # recored the range of theta and phi (input)
-    # logger.debug(f"theta range: {theta_phi[:, 0].min().item()} to {theta_phi[:, 0].max().item()}, NaN: {torch.isnan(theta_phi[:, 0]).any()}")
-    # logger.debug(f"phi range: {theta_phi[:, 1].min().item()} to {theta_phi[:, 1].max().item()}, NaN: {torch.isnan(theta_phi[:, 1]).any()}")
-
-    '''the inputs are pytorch tensors, so we need to convert them to numpy arrays for the function'''
-    # I guess there is a pitchtoyaw func in EVE lib for pytorch tensors directly (in angular.py ???)'''
-    theta_phi_np = theta_phi.detach().cpu().numpy()
-    vectors_np = pitchyaw_to_vector(theta_phi_np)  # EVE lib func
-    vectors_torch = torch.from_numpy(vectors_np).to(theta_phi.device).type(theta_phi.dtype)
-
-    # NaN check for output
-    # if torch.isnan(vectors_torch).any():
-    #     logger.warning(f"cartesian result NaN check: {torch.isnan(vectors_torch).any()}")
-    #     logger.warning(f"x NaN check: {torch.isnan(vectors_torch[:, 0]).any()}")
-    #     logger.warning(f"y NaN check: {torch.isnan(vectors_torch[:, 1]).any()}")
-    #     logger.warning(f"z NaN check: {torch.isnan(vectors_torch[:, 2]).any()}")
-
-    return vectors_torch
-
-
-def angular_error(a, b):  # losses/angular error, can be changed to directly use the lib func
-    """Differentiable PyTorch implementation of calculating angular error, using the logic in angular.py directly"""
-    a_vec = pitchyaw_to_vector(a)  # is this func the pytorch version?
-    b_vec = pitchyaw_to_vector(b)
-
-    # calculate cosine similarity (which is error)
-    sim = F.cosine_similarity(a_vec, b_vec, dim=1, eps=1e-8)
-    sim = F.hardtanh_(sim, min_val=-1 + 1e-8,
-                      max_val=1 - 1e-8)  # same as Anuglarloss #from losses.angular import AngularLoss
-
-    # conver to angles
-    to_degrees = 180. / torch.pi
-
-    return torch.acos(sim) * to_degrees
-
-
-# Custom exception class for NaN detection
-class NaNDetectedException(Exception):
-    """Exception raised when NaN values are detected"""
-    pass
-
-
-''' some doubts'''
-
-
-def validate_model(model, valid_dl, loss_func, log_images=False, batch_idx=0):
-    "Compute performance of the model on the validation dataset and log a wandb.Table"
-    model.eval()
-    val_loss = 0.0
-    total_ang_error = 0.0
-
-    with torch.inference_mode():
-        for i, (Leyes, Reyes, faces, labels) in enumerate(valid_dl):
-            Leyes, Reyes, faces, labels = Leyes.to(device), Reyes.to(device), faces.to(device), labels.to(device)
-
-            # Forward pass
-            outputs = model(Leyes, Reyes, faces)
-            
-            # val_loss += loss_func.calculate_mean_loss(outputs, labels).item() * labels.size(0)
-            val_loss += loss_func.calculate_mean_loss(outputs, labels).item() * labels.size(0)
-            batch_error = loss_func.calculate_loss(outputs, labels)  # Use calculate_loss to get the angle error of each sample
-                
-            total_ang_error += batch_error.sum().item()
-
-            # Log one batch of images
-            if i == batch_idx and log_images:
-                log_image_table(Leyes, Reyes, faces, outputs, labels, outputs.softmax(dim=1))
-
-    return val_loss / len(valid_dl.dataset), total_ang_error / len(valid_dl.dataset)
-
-
-''' some doubts'''
-
-
-def log_image_table(Leyes, Reyes, faces, predicted, labels, errors):
-    "Log a wandb.Table with (img, pred, target, scores)"
-
-    # predicted = spherical_to_cartesian(predicted)
-    # labels = spherical_to_cartesian(labels)
-
-    predicted = pitchyaw_to_vector(predicted)
-    labels = pitchyaw_to_vector(labels)
-    table = wandb.Table(
-        columns=["left_eye", "right_eye", "face", "pred_x", "pred_y", "pred_z",
-                 "target_x", "target_y", "target_z", "angular_error"]
-    )
-
-    ###############################changed !!!!!!!!!!!!!!!!!!###########################
-    # gaze.py angular.py AngularLoss as
-    ang_loss = AngularLoss()
-    ################################changed !!!!!!!!!!!!!!!!!!!!#####################
-
-    with torch.no_grad():  # gradient calc is not needed?????
-        errors = ang_loss.calculate_loss(predicted, labels)  # calc angular error
-
-    for left, right, face, pred, targ, err in zip(
-            Leyes.to("cpu"), Reyes.to("cpu"), faces.to("cpu"), predicted.to("cpu"), labels.to("cpu"), errors.to("cpu")
-    ):
-        # img visualization
-        left_img = wandb.Image(left.permute(1, 2, 0).numpy() * 255)
-        right_img = wandb.Image(right.permute(1, 2, 0).numpy() * 255)
-        face_img = wandb.Image(face.permute(1, 2, 0).numpy() * 255)
-
-        # add one row of data to the table
-        table.add_data(
-            left_img, right_img, face_img,
-            float(pred[0]), float(pred[1]), float(pred[2]),
-            float(targ[0]), float(targ[1]), float(targ[2]),
-            float(err.item())
-        )
-
-    wandb.log({"gaze_predictions": table}, commit=False)
-
-
-# Backward hook function to monitor gradients during backpropagation
-# def backward_hook(module, grad_input, grad_output):
-#     for g in grad_input:
-#         if g is not None and torch.isnan(g).any():
-#             logger.error("NaN gradient detected in backward hook")
-#             raise NaNDetectedException("NaN gradient detected in backward hook")
-#     return None
-
-
-# Function to check gradients for NaN values
-# def check_grad_nan(grad, name):
-#     if grad is not None and torch.isnan(grad).any():
-#         logger.error(f"NaN gradient detected in parameter {name} during backward")
-#         raise NaNDetectedException(f"NaN gradient detected in parameter {name}")
-#     return grad
-
-
 def train():
-    logger.info("Starting training...")
+    logger.info("Starting training with sequence data...")
 
-    model = WholeModel().to(device)  # Load the model
-
-    # Register hooks for model parameters to detect NaN during backpropagation
-    # for name, param in model.named_parameters():
-    #     if param.requires_grad:
-    #         param.register_hook(lambda grad, name=name: check_grad_nan(grad, name))
+    # Initialize base model
+    base_model = WholeModel().to(device)
+    
+    # Create sequence model - now importing from your model file
+    model = SequentialWholeModel(base_model).to(device)
 
     early_stopper = EarlyStopping(patience=5, min_delta=1e-3)
 
-    '''Rohan'''
-    # dataset_path = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP"
-    # label_excel = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP"
-    # validation_dataset_path = "/data/leuven/374/vsc37437/mango_to_vsc_test/OP-Val"
-    '''Rohan'''
-
     '''Tau'''
-    dataset_path = "/data/leuven/374/vsc37415/OP2/OP"
-    label_excel = "/data/leuven/374/vsc37415/OP2/OP"
-    validation_dataset_path = "/data/leuven/374/vsc37415/OP2/OP_val"
-    
-    dataset_path = "/scratch/leuven/374/vsc37415/EVE_large/train"
-    label_excel = "/scratch/leuven/374/vsc37415/EVE_large/train"
+    dataset_path = "/scratch/leuven/374/vsc37415/EVE_large/train"  # dataset path
+    label_excel = "/scratch/leuven/374/vsc37415/EVE_large/train"  # label path
     validation_dataset_path = "/scratch/leuven/374/vsc37415/EVE_large/val"
     '''Tau'''
 
-
-
-    # Train your model and upload checkpoints
-    # Launch 3 experiments, trying different dropout rates
+    # Start training experiment
     for _ in range(1):
-        # initialise a wandb run
+        # Initialize wandb
         wandb.init(
             project="pytorch-intro",
             config={
-                "epochs": 10,
-                "batch_size": 128,
-                "lr": 1e-4,
-                "dropout": random.uniform(0.4, 0.5)  # trying different dropout rates
+                "epochs": 30,
+                "batch_size": 4,  # reduce batch size to accommodate sequence data
+                "lr": 2e-5,
+                "weight_decay": 5e-6,  
+                "dropout": random.uniform(0.1, 0.2),  
+                "sequence_length": 30,  # sequence length
+                "max_steps_per_folder": 10  # maximum number of steps to use per folder
             },
         )
 
-        # Copy your config
+        # Get configuration
         config = wandb.config
 
-        # # Get the data
-        # # combine different images from different folders
-        # train_dl = get_dataloader(dataset_path, label_excel, batch_size=config.batch_size, shuffle=True)
-        # '''!!!!!!!!!!!!'''
-        # valid_dl = get_dataloader(validation_dataset_path, label_excel, batch_size=config.batch_size,
-        #                           shuffle=False)  # no shuffle for validation, also 2 times batch size for faster validation?
-
-        train_dl = get_dataloader(dataset_path, label_excel, batch_size=config.batch_size, shuffle=True)
-        valid_dl = get_dataloader(validation_dataset_path, label_excel, 
-                                 batch_size=config.batch_size,
-                                 shuffle=False,
-                                 is_validation=True)  # is_validation=True, to create a subset of the val set
+        # Get sequence data loaders
+        train_dl = get_sequence_dataloader(
+            dataset_path, 
+            label_excel, 
+            batch_size=config.batch_size, 
+            sequence_length=config.sequence_length,
+            max_steps_per_folder=config.max_steps_per_folder,
+            shuffle=True, 
+            num_workers=4
+        )
         
-        '''!!!!!!!!!!!!'''
-        n_steps_per_epoch = math.ceil(len(train_dl.dataset) / config.batch_size)
+        valid_dl = get_sequence_dataloader(
+            validation_dataset_path, 
+            label_excel, 
+            batch_size=config.batch_size,
+            sequence_length=config.sequence_length,
+            max_steps_per_folder=config.max_steps_per_folder,
+            shuffle=False,
+            is_validation=True,
+            num_workers=4
+        )
+        
+        # Calculate steps per epoch
+        steps_per_epoch = math.ceil(len(train_dl.dataset) / config.batch_size)
 
-        #########################################
-        ''' what's the difference in valid_dl'''
-        # # Get the data
-        # train_dl = get_dataloader(is_train=True, batch_size=config.batch_size)
-        # valid_dl = get_dataloader(is_train=False, batch_size=2 * config.batch_size)
-        # n_steps_per_epoch = math.ceil(len(train_dl.dataset) / config.batch_size)
-        ########################################
-
-        # Make the loss and optimizer
-        # loss_func = nn.CrossEntropyLoss()
-        # loss_func = angular_error
+        # Use angular loss with validity handling
         loss_func = AngularLoss()
 
-        # optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
-        optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, weight_decay=1e-4)  # added weight decay
+        # Use AdamW optimizer
+        optimizer = torch.optim.AdamW(
+            model.parameters(), 
+            lr=config.lr,
+            weight_decay=config.weight_decay
+        )
+        
+        # Use ReduceLROnPlateau
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, 
+            mode='min',
+            factor=0.5,
+            patience=2,
+            min_lr=1e-6,
+            verbose=True
+        )
+        
+        # Initialize mixed precision training
+        scaler = torch.amp.GradScaler('cuda')
 
-        # Training
-        example_ct = 0  # track the number of examples seen so far
-        step_ct = 0  # track the number of steps taken so far
+        # Initialize training variables
+        example_ct = 0
+        step_ct = 0
+        best_val_error = float('inf')
+
+        # Store losses for each epoch
+        epoch_train_losses = []
+        epoch_val_losses = []
 
         for epoch in range(config.epochs):
             logger.info(f"Starting epoch {epoch + 1}/{config.epochs}")
             model.train()
-            for step, (Leyes, Reyes, faces, labels) in enumerate(train_dl):
+            epoch_loss = 0.0
+            samples_count = 0
+            
+            for step, batch_data in enumerate(train_dl):
                 try:
-                    Leyes, Reyes, faces, labels = Leyes.to(device), Reyes.to(device), faces.to(device), labels.to(
-                        device)
-
-                    # Use detect_anomaly to wrap forward and backward passes
-                    # with torch.autograd.detect_anomaly():
-                    outputs = model(Leyes, Reyes, faces)
-                    # if (torch.isnan(outputs).any()):
-                    #     logger.error(f"Model outputs NaN check: {torch.isnan(outputs).any()}")
-                    #     raise NaNDetectedException("NaN detected in model outputs")
-
-                    # train_loss = loss_func(outputs, labels)
-                    train_loss = loss_func.calculate_mean_loss(outputs, labels)
-                    # if torch.isnan(train_loss).any():
-                    #     logger.error(f"Loss NaN check: {torch.isnan(train_loss).any()}")
-                    #     raise NaNDetectedException("NaN detected in loss calculation")
-
-                    # batch_error = angular_error(outputs, labels) # angular error in degrees, base on batches
-                    batch_error = loss_func.calculate_loss(outputs, labels)
-                    # if torch.isnan(batch_error).any():
-                    #     logger.error(f"NaN detected in batch error at epoch {epoch}, step {step}")
-                    #     raise NaNDetectedException("NaN detected in batch error calculation")
-
+                    # Get batch data
+                    left_eyes = batch_data['left_eye'].to(device, non_blocking=True)
+                    right_eyes = batch_data['right_eye'].to(device, non_blocking=True)
+                    faces = batch_data['face'].to(device, non_blocking=True)
+                    labels = batch_data['gaze'].to(device, non_blocking=True)
+                    labels_validity = batch_data['gaze_validity'].to(device, non_blocking=True)
+                    
+                    # Clear gradients
                     optimizer.zero_grad()
+                    
+                    # Use mixed precision training
+                    with torch.amp.autocast('cuda'):
+                        # Forward pass
+                        outputs = model(left_eyes, right_eyes, faces)
+                        
+                        # Prepare reference dictionary
+                        reference_dict = {
+                            'gaze': labels,
+                            'gaze_validity': labels_validity
+                        }
+                        
+                        # Calculate loss using calculate_mean_loss - UPDATED
+                        train_loss = loss_func.calculate_mean_loss(outputs, 'gaze', reference_dict)
+                        
+                        # Get batch error using calculate_loss - UPDATED
+                        batch_error = loss_func.calculate_loss(outputs, 'gaze', reference_dict)
 
-                    # Calculate and check if mean is NaN
-                    loss_mean = train_loss.mean()
-                    # if torch.isnan(loss_mean):
-                    #     logger.error("NaN detected in loss.mean()")
-                    #     raise NaNDetectedException("NaN detected in loss.mean()")
+                    # Backward pass
+                    scaler.scale(train_loss).backward()
+                    
+                    # Gradient clipping
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    
+                    # Update parameters
+                    scaler.step(optimizer)
+                    scaler.update()
 
-                    # Execute backpropagation
-                    loss_mean.backward()
+                    # Update statistics
+                    batch_size = left_eyes.size(0)
+                    samples_count += batch_size
+                    epoch_loss += train_loss.item() * batch_size
+                    
+                    example_ct += batch_size
 
-                    # Check for NaN in gradients
-                    # nan_params = []
-                    # for name, param in model.named_parameters():
-                    #     if param.grad is not None and torch.isnan(param.grad).any():
-                    #         nan_params.append(name)
-                    #         logger.error(f"NaN gradient detected in {name}")
-                    #         # Print parameter and gradient statistics for diagnostics
-                    #         if not torch.isnan(param).all():  # Ensure param is not all NaN
-                    #             logger.error(f"  - Param stats: min={param.min().item()}, max={param.max().item()}, mean={param.mean().item()}")
-                    #         if not torch.isnan(param.grad).all():  # Ensure grad is not all NaN
-                    #             logger.error(f"  - Grad stats: min={param.grad.min().item()}, max={param.grad.max().item()}, mean={param.grad.mean().item()}")
+                    # Get current learning rate
+                    current_lr = optimizer.param_groups[0]['lr']
 
-                    optimizer.step()
-
-                    example_ct += len(labels)
-
+                    # Record metrics
                     metrics = {
-                        "train/train_loss": train_loss.mean().item(),
-                        "train/angular_error": batch_error.mean().item(),
-                        "train/epoch": (step + 1 + (n_steps_per_epoch * epoch))
-                                       / n_steps_per_epoch,
+                        "train/train_loss": train_loss.item(),
+                        "train/angular_error": batch_error.mean().item(),  # ADDED angular error metric
+                        "train/epoch": (step + 1 + (steps_per_epoch * epoch)) / steps_per_epoch,
                         "train/example_ct": example_ct,
+                        "train/lr": current_lr
                     }
 
-                    if step + 1 < n_steps_per_epoch:
-                        wandb.log(metrics)
+                    wandb.log(metrics)
 
-                    # # Periodically print training info
-                    # if step % 10 == 0:
-                    #     logger.info(
-                    #         f"Epoch {epoch + 1}, Step {step}: Loss = {train_loss.mean().item():.4f}, Error = {batch_error.mean().item():.4f}")
+                    # Print training information periodically
+                    if step % 20 == 0:
+                        logger.info(
+                            f"Epoch {epoch + 1}, Step {step}: Loss = {train_loss.item():.4f}, "
+                            f"Error = {batch_error.mean().item():.4f}, LR = {current_lr:.6f}"  # ADDED error reporting
+                        )
 
                     step_ct += 1
-
-                except NaNDetectedException as e:
-                    logger.error(f"NaN detected: {e}")
-                    # We don't exit here to maintain compatibility with original code behavior
-                    # Instead log the error and continue training as in the original
 
                 except Exception as e:
                     logger.error(f"Error in training step {step} of epoch {epoch}: {e}")
                     import traceback
                     logger.error(traceback.format_exc())
+                    salvage_memory()
                     continue
+            
+            # Calculate average training loss
+            avg_train_loss = epoch_loss / samples_count if samples_count > 0 else 0
+            epoch_train_losses.append(avg_train_loss)
+            
+            # Validate model
+            val_loss, val_error = validate_sequence_model(model, valid_dl, loss_func)
+            epoch_val_losses.append(val_loss)
 
-            # validate model after each epoch by using subset
-            val_loss, val_error = validate_model(
-                model, valid_dl, loss_func, log_images=(epoch == (config.epochs - 1))
+            # Update learning rate scheduler
+            scheduler.step(val_error)
+
+            # Get current learning rate
+            current_lr = optimizer.param_groups[0]['lr']
+            
+            # Record metrics for each epoch
+            epoch_metrics = {
+                "epoch/train_loss": avg_train_loss,
+                "epoch/val_loss": val_loss,
+                "epoch/val_error": val_error,
+                "epoch/lr": current_lr,
+                "epoch/number": epoch + 1
+            }
+            wandb.log(epoch_metrics)
+            
+            # Create train_loss vs val_loss chart
+            train_vs_val_loss = wandb.plot.line_series(
+                xs=[[i+1 for i in range(epoch+1)], [i+1 for i in range(epoch+1)]],
+                ys=[epoch_train_losses, epoch_val_losses],
+                keys=["Train Loss", "Val Loss"],
+                title="Train Loss vs Val Loss",
+                xname="Epoch"
             )
+            wandb.log({"train_vs_val_loss": train_vs_val_loss})
 
-            # Log train and validation metrics to wandb
-            val_metrics = {"val/val_loss": val_loss,
-                           "val/val_error": val_error}
-            wandb.log({**metrics, **val_metrics})
+            # Record validation metrics
+            val_metrics = {
+                "val/val_loss": val_loss,
+                "val/val_error": val_error,
+                "val/lr": current_lr
+            }
+            wandb.log(val_metrics)
+
+            # Check if this is the best model
+            if val_error < best_val_error:
+                best_val_error = val_error
+                # Save the best model
+                best_model_path = f"best_model_epoch_{epoch}.pt"
+                torch.save(model.state_dict(), best_model_path)
+                logger.info(f"Saved best model with error {best_val_error:.4f} to {best_model_path}")
 
             # Early stopping check
-            if (early_stopper(val_error)):
+            if early_stopper(val_error):
                 logger.info("Early stopping triggered")
                 break
 
-            # Save the model checkpoint to wandb
-            torch.save(model, "my_model.pt")
-            wandb.log_model(
-                "./my_model.pt",
-                "my_mnist_model",  # change?
-                aliases=[f"epoch-{epoch + 1}_dropout-{round(wandb.config.dropout, 4)}"],
-            )
+            # Record information for each epoch
+            logger.info(f"Epoch: {epoch + 1} completed. Train Loss: {avg_train_loss:.4f}, Val Loss: {val_loss:.4f}, Val Error: {val_error:.4f}, LR: {current_lr:.6f}")
+            
+            # Free memory at the end of epoch
+            salvage_memory()
 
-            logger.info(f"Epoch: {epoch + 1} completed. Val Loss: {val_loss:.4f}, Val Error: {val_error:.4f}")
+        # Load the best model for final testing
+        best_model_path = f"best_model_epoch_{epoch}.pt"
+        if os.path.exists(best_model_path):
+            model.load_state_dict(torch.load(best_model_path))
+            logger.info(f"Loaded best model from {best_model_path} for final testing")
 
-        # # If you had a test set, this is how you could log it as a Summary metric
-        # wandb.summary["test_Val_error"] = val_error
-
-        # test full validation set
+        # Test on the full validation set
         logger.info("Training completed. Starting full evaluation on the complete validation set...")
         final_loss, final_error = do_final_full_test(model, valid_dl, loss_func)
 
-        wandb.summary["test_Val_error"] = val_error  # for subset
-        wandb.summary["test_Val_loss"] = val_loss    # for subset
-
-        wandb.summary["final_test_error"] = final_error  # for full dataset
-        wandb.summary["final_test_loss"] = final_loss    # for full dataset
+        # Record final results
+        wandb.summary["best_val_error"] = best_val_error
+        wandb.summary["best_model_path"] = best_model_path
+        wandb.summary["final_test_error"] = final_error
+        wandb.summary["final_test_loss"] = final_loss
 
         wandb.finish()
 
 
 if __name__ == "__main__":
     try:
+        # Set random seed for reproducibility
+        torch.manual_seed(42)
+        torch.cuda.manual_seed(42)
+        np.random.seed(42)
+        
         train()
-    except NaNDetectedException as e:
-        logger.error(f"Training terminated due to NaN detection: {e}")
-        sys.exit(1)
     except Exception as e:
         logger.error(f"Fatal error in training: {e}")
         import traceback
-
         logger.error(traceback.format_exc())
+        salvage_memory()

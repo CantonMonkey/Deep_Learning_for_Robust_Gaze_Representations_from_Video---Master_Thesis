@@ -1,3 +1,5 @@
+#no RELU, low dropout, and overfitting.
+
 ## layer 1, understand strides and kernel_size concepts, we do not freeze the layers i think? maybe if there is overfitting we can freeze resnet for less training parameters
 import torch
 import torch.nn as nn
@@ -21,82 +23,30 @@ class ResNetFeatureExtractor(nn.Module):
         super(ResNetFeatureExtractor, self).__init__()
         resnet = models.resnet18(pretrained=True)
 
-        self.feature_extractor = nn.Sequential(*list(resnet.children())[:-3])
-        
-        self.feature_extractor[-1][0].conv1.stride = (1, 1) # normally resnet has stride = 2 in layer 3 this will downsample from 8x8 to 4x4. This is to avoid this. More spatil features are preserved
-        self.feature_extractor[-1][0].downsample[0].stride = (1, 1) 
+        self.feature_extractor = nn.Sequential(*list(resnet.children())[:4])  # output shape: (bs, 64, h/4, w/4)  # 64 channels, 1/4 of the original image size
 
-        self.reduce_channels = nn.Sequential(
-                                            nn.Conv2d(256, 128, kernel_size=1),
-                                            nn.BatchNorm2d(128),
-                                            nn.ReLU()
-                                            ) # kernel_size 1 only changes the number of channels and doesn't mess with the spatial size
+        for param in self.feature_extractor.parameters():
+            param.requires_grad = False
 
 
     def forward(self, x):
         x = self.feature_extractor(x)  
-        x = self.reduce_channels(x)   
-        #print("ResNetFeatureExtractor", x.shape)
         return x  # (bs, ch, h, w)
 
 
 
-class ResNetFeatureExtractor2(nn.Module):
-    def __init__(self, fuse_type='AFF'):
-        super(ResNetFeatureExtractor2, self).__init__()  
-        resnet = aff_resnet18(fuse_type=fuse_type, small_input=True)
-        self.feature_extractor = nn.Sequential(*list(resnet.children())[:-3])
-        
-        if hasattr(self.feature_extractor[-1][0], 'conv1'):
-            self.feature_extractor[-1][0].conv1.stride = (1, 1)
-        if hasattr(self.feature_extractor[-1][0], 'downsample') and self.feature_extractor[-1][0].downsample is not None:
-            self.feature_extractor[-1][0].downsample[0].stride = (1, 1)
-        
-        self.reduce_channels = nn.Sequential(
-            nn.Conv2d(256, 128, kernel_size=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU()
-        )
-
-    def forward(self, x):
-        x = self.feature_extractor(x)  
-        x = self.reduce_channels(x)   
-        return x
-
-
-
-# class FeatureFusion(torch.nn.Module):
-#     """
-#     Feature Fusion Layer
-#     input shape: (bs, ch, h, w)
-#     output shape: (bs, ch, h, w)
-#     """
-#     def __init__(self, total_ch = 384):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
-#         super(FeatureFusion, self).__init__()
-#         # total_ch = 384
-#         self.gn = torch.nn.GroupNorm(24, total_ch)     # Separate 6 channels into 3 groups, how to define a appropriate number of groups & channels?
-#     def forward(self, left_eye, right_eye, face):
-#         # layer2
-#         # layer 2: feature fusion: concate + group  normalization
-#         # self.concate = torch.cat((x, x, x), 0) // not needed here, only in forward
-#         # total_ch = Leye[1]+Reye[1]+FaceData[1]  # total channels of the input // this is not working 
-#         concate = torch.cat((left_eye, right_eye, face), 1)  # dim = 0 or 1?  only channel dim changes?
-#         out = self.gn(concate)
-#         out = F.relu(out)
-#         #print("FeatureFusion", out.shape)
-#         return out 
 
 class FeatureFusion(torch.nn.Module):
-    def __init__(self, total_ch=384):
+    def __init__(self, total_ch=192):
         super(FeatureFusion, self).__init__()
         self.gn = torch.nn.GroupNorm(24, total_ch)
         self.channel_attention = MS_CAM(channels=total_ch)
+        self.dropout = nn.Dropout(0.1)
             
     def forward(self, left_eye, right_eye, face):
         concate = torch.cat((left_eye, right_eye, face), 1)
         out = self.gn(concate)
-        out = F.relu(out)
-        out = self.channel_attention(out)
+        out = self.dropout(out)
         return out
 
 # from vit_pytorch import ViT
@@ -112,16 +62,24 @@ class Attention(torch.nn.Module):
     in forward, reshape to (bs, h*w, ch)
     output shape: (bs, h*w, ch)
     """
-    def __init__(self, total_ch = 384):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
+    def __init__(self, total_ch=192):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
         super(Attention, self).__init__()
+        # self.self_att = Transformer(
+        #         dim = total_ch,   # if not using the total_ch, should project the input to the dim of the transformer first
+        #         depth = 3,
+        #         heads = 8,
+        #         dim_head = total_ch//8,  #dim//heads
+        #         mlp_dim = 512,  # the hidden layer dim of the mlp (the hidden layer of the feedforward network, which is applied to each position (each token) separately and identically)
+        #         dropout = 0.1
+        #         # def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout = 0.)
+        # )
         self.self_att = Transformer(
-                dim = total_ch,   # if not using the total_ch, should project the input to the dim of the transformer first
-                depth = 2,
-                heads = 8,
-                dim_head = total_ch//8,  #dim//heads
-                mlp_dim = 1024,  # the hidden layer dim of the mlp (the hidden layer of the feedforward network, which is applied to each position (each token) separately and identically)
-                dropout = 0.4
-                # def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout = 0.)
+        dim = total_ch,
+        depth = 4,
+        heads = 6,
+        dim_head = 64,  # Fixed dimension may be more stable than relative dimension. right?
+        mlp_dim = 512,
+        dropout = 0.1
         )
 
 
@@ -129,16 +87,9 @@ class Attention(torch.nn.Module):
         bs, c, h, w = out.shape
         x_att = out.reshape(bs, c, h * w).transpose(1, 2)   # (bs, h*w, c) --- (bs, seq_len, features)
         x_att = self.self_att(x_att)  # output shape (bs, h*w, c)
-        x_att=F.relu(x_att)
 
-        #reshape the output
-        # for input frames, the temporal information should be considered, how to define the input_size and hidden_size?
-
-        #print("Attention", x_att.shape)
         return x_att
-        
 
-        # set learning rate for diff layers
      
 
 
@@ -149,89 +100,35 @@ class Temporal(torch.nn.Module):
     output shape: (bs, seq_len, ch)  # seq_len = h*w 
     h_n shape: (num_layers, bs, hidden_size)
     """
-    def __init__(self, total_ch = 384):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
+    def __init__(self, total_ch = 192):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
         super(Temporal, self).__init__()
-        # RNN layer for temporal information
-        # https://pytorch.org/docs/stable/generated/torch.nn.GRU.html
-        # torch.nn.GRU(input_size, hidden_size, num_layers=1, bias=True, batch_first=False, dropout=0.0, bidirectional=False, device=None, dtype=None)
-        # how to define the input_size and hidden_size?
-        # test num_layers param, what does it affect?
         self.gru = torch.nn.GRU(input_size=total_ch, # ????
                                 hidden_size=512,    # the more hidden size, the complexer memory
                                 num_layers=2, #2 or 3       # does this represent the number of GRU blocks? or say the number of consecutive frames we wanna consider?
                                 bias=True, 
                                 batch_first=True,    # True
-                                dropout=0.3, 
+                                dropout=0.1, 
                                 bidirectional=False,   
                                 device=None, 
                                 dtype=None)
         
-        # do the params need to be defined in constructor?
-
-        # input of GRU:
-        # :math:`(L, N, H_{in})` when ``batch_first=False`` or
-        #   :math:`(N, L, H_{in})` when ``batch_first=True``
-        # for the output of transformer, the h*w represents the seq_length, and the total_ch represents the features (which is H_{in} or input size)
-        # output of transformer : (ba, h*w, ch), should be reshaped to (seq_len, bs, features) for GRU, which is (h*w, bs, total_ch)
-        # the transformation is done in the Class "WholeModel"
+        # self.gru = nn.GRU(
+        #     input_size=192,  # Channel number of attention output from base model
+        #     hidden_size=512,
+        #     num_layers=2,
+        #     batch_first=True,
+        #     dropout=0.1
+        # )
+        
     
         
 
     def forward(self, x_att, h_state=None):
-        #print("Temporal_start", x_att.shape, h_state)
-        # h_n itself should be an input for GRU, otherwise useless, dont forget the hidden state
         out, h_n = self.gru(x_att, h_state) # read the source, there are 2 outputs, but what is h_n here? should be the hidden state of the last layer?
-        out = F.relu(out)
-        # mind the coherence of the input and output of the RNN layer 
-        
-        #reshape the output
-        # for input frames, the temporal information should be considered, how to define the input_size and hidden_size?
 
-        #print("Temporal out", out.shape)
-        #print("Temporal h_n", h_n.shape)
         return out, h_n   # okay one important thing is to use h_n or out for fc layer?
         # answer: use out, since it contains the info of all "time steps" (or frame steps). However, h_n only contains the info of the last time step. 
-        
 
-        # set learning rate for diff layers
-
-
-
-
-#########################################################################
-
-# class FeatureExtraction(torch.nn.Module):
-#     feature_extractor = ResNetFeatureExtractor()
-#     feature_extractor.eval()  
-#     transform = transforms.Compose([ # pre processing the images to match the resnet's training statistics
-#         transforms.Resize((128, 128)), 
-#         transforms.ToTensor(),
-#         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # normalization of the pixel values
-#     ])
-
-#     def extract_features(self, image_path):
-#         img = Image.open(image_path).convert("RGB") 
-#         img = self.transform(img).unsqueeze(0) # apply the transformations, batch size is set to 1
-#         # with torch.no_grad():
-#         features = self.feature_extractor(img)  
-        
-#         return features
-
-# class FeatureExtraction(torch.nn.Module):
-#     def __init__(self):
-#         super(FeatureExtraction, self).__init__()
-#         self.feature_extractor = ResNetFeatureExtractor()
-#         self.feature_extractor.eval()
-#
-#     def extract_features(self, img_tensor):
-#         # img_tensor = img_tensor.unsqueeze(0)  # add batch dimension, no...
-#         with torch.no_grad():
-#             features = self.feature_extractor(img_tensor)
-#         return features
-
-
-
-#########################################################################
 
 class GazePrediction(nn.Module):
     """
@@ -243,65 +140,128 @@ class GazePrediction(nn.Module):
     def __init__(self, input_dim, num_classes):
         super(GazePrediction, self).__init__()
         # self.fc = nn.Linear(input_dim, num_classes)
-        self.dropout = nn.Dropout(0.3)
+        self.dropout = nn.Dropout(0.1)
         self.fc1 = nn.Linear(input_dim, 128)
+        self.bn = nn.BatchNorm1d(128)
         self.fc2 = nn.Linear(128, num_classes)
     
     def forward(self, x):
         #print("enter FC layer")
         # Ensure x is flat going into the FC layer (it should already be flat if coming from GAP)
         x = x.view(x.size(0), -1)  # Flatten to [bs, features]
-
-        x = self.fc1(x)
-        x = F.relu(x)
         x = self.dropout(x)
+        x = self.fc1(x)
         x = self.fc2(x)
-        # x = self.fc(x)
-        #print("GazePrediction", x.shape)
+
         return x
 
-class WholeModel(nn.Module): ## Sequence Length=batchsize !!
+## CNN + Attention
+class WholeModel(nn.Module):
     def __init__(self):
         super(WholeModel, self).__init__()
-        self.layers= (nn.ModuleList([
-                # ResNetFeatureExtractor2(fuse_type='AFF'),  # AFF / iAFF / DAF
-                ResNetFeatureExtractor(),
-                FeatureFusion(),
-                Attention(),
-                Temporal(),
-                GazePrediction(input_dim=512, num_classes=2)  # why sequence_length = 64? h*w*bs, yes indeed :)
-                # RuntimeError: mat1 and mat2 shapes cannot be multiplied (4x8192 and 32768x3) from 8192/512=16 I know seq_len = 16, but why?
-                # answer: read the source code of GRU, the output of GRU is (seq_len, bs, hidden_size), so the input of FC layer should be (bs, seq_len*hidden_size)
-            ]))
+
+        # Feature extractors
+        self.left_eye_extractor = ResNetFeatureExtractor()
+        self.right_eye_extractor = ResNetFeatureExtractor()
+        self.face_extractor = ResNetFeatureExtractor()
+        self.uni_extractor = ResNetFeatureExtractor()
         
-        # self.left_eye = self.layers[0]
-        # self.right_eye = self.layers[0]
-        # self.face = self.layers[0]
+        # Feature fusion
+        self.feature_fusion = FeatureFusion()
+        
+        # Attention mechanism
+        self.attention = Attention()
+        
+        # GRU and prediction layers removed
+    
     def forward(self, left_eye_img, right_eye_img, face_img):
-
+        # Feature extraction
+        left_feat = self.uni_extractor(left_eye_img)
+        right_feat = self.uni_extractor(right_eye_img)
+        face_feat = self.uni_extractor(face_img)
         
-        # Extract features
-        left_eye = self.layers[0](left_eye_img)
+        # Feature fusion
+        fused = self.feature_fusion(left_feat, right_feat, face_feat)
+        
+        # Attention processing
+        att_out = self.attention(fused)  # [B, H*W, C]
+        
+        # Return features directly without prediction
+        return att_out
 
-        right_eye = self.layers[0](right_eye_img)
+class SequentialWholeModel(nn.Module):
+    def __init__(self, base_model=None):
+        super(SequentialWholeModel, self).__init__()
+        
+        # Use existing model or create a new one
+        if base_model is not None:
+            self.base_model = base_model
+        else:
+            self.base_model = WholeModel()
+            
+        # Add sequential GRU layer
+        # self.gru = nn.GRU(
+        #     input_size=192,  # Channel number of attention output from base model
+        #     hidden_size=512,
+        #     num_layers=2,
+        #     batch_first=True,
+        #     dropout=0.1
+        # )
+        self.gru = Temporal(total_ch=192)  # Use the custom GRU class defined above
+        
+        # Prediction layer transplanted from WholeModel
+        self.prediction = GazePrediction(input_dim=512, num_classes=2)
+    
+    def forward(self, left_eyes, right_eyes, faces):
+        """
+        Process sequence input
+        Args:
+            left_eyes: [B, seq_len, C, H, W]
+            right_eyes: [B, seq_len, C, H, W]
+            faces: [B, seq_len, C, H, W]
+        Returns:
+            outputs: [B, seq_len, 2]
+        """
+        seq_len = left_eyes.shape[1]
+        batch_size = left_eyes.shape[0]
+        
+        # Prepare to store features for each frame
+        frame_features = []
+        
+        # Process each frame in the sequence to get features
+        for t in range(seq_len):
+            # Get data for current time step
+            left_t = left_eyes[:, t]   # [B, C, H, W]
+            right_t = right_eyes[:, t] # [B, C, H, W]
+            face_t = faces[:, t]       # [B, C, H, W]
+            
+            # Process current frame through base model to get features
+            features_t = self.base_model(left_t, right_t, face_t)  # [B, H*W, C]
+            
+            # Global average pooling to reduce feature dimensions
+            pooled_features = torch.mean(features_t, dim=1)  # [B, C]
+            
+            frame_features.append(pooled_features)
+        
+        # Stack features from all frames
+        frame_features = torch.stack(frame_features, dim=1)  # [B, seq_len, C]
+        
+        # Process sequence through GRU
+        rnn_out, _ = self.gru(frame_features)  # [B, seq_len, hidden_size]
+        
+        # Prepare to store predictions for each time step
+        outputs = []
+        
+        # Make prediction for each time step
+        for t in range(seq_len):
+            time_feat = rnn_out[:, t]  # [B, hidden_size]
+            pred_t = self.prediction(time_feat)  # [B, 2]
+            outputs.append(pred_t)
+        
+        # Stack predictions from all time steps
+        outputs = torch.stack(outputs, dim=1)  # [B, seq_len, 2]
+        
+        return outputs
 
-        face = self.layers[0](face_img)
-
-        # Fusion
-        fusioned_feature = self.layers[1](left_eye, right_eye, face)
-
-        # Attention
-        Attention_map = self.layers[2](fusioned_feature)
-
-        # GRU
-        gru_out, h_n = self.layers[3](Attention_map)
-
-        # GAP
-        gap = torch.mean(gru_out, dim=1)
-        gap = F.relu(gap)
-
-        # FC layer
-        pred = self.layers[4](gap)
 
     
-        return pred
