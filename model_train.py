@@ -40,6 +40,58 @@ def salvage_memory():
     gc.collect()
 
 
+class BaseLossWithValidity(object):
+    def calculate_loss(self, predictions, ground_truth):
+        raise NotImplementedError('Must implement BaseLossWithValidity::calculate_loss')
+
+    def calculate_mean_loss(self, predictions, ground_truth):
+        return torch.mean(self.calculate_loss(predictions, ground_truth))
+
+    def __call__(self, predictions, gt_key, reference_dict):
+        # Process sequence data, assuming shape is B x T x F (if ndim == 3)
+        batch_size = predictions.shape[0]
+
+        individual_entry_losses = []
+        num_valid_entries = 0
+
+        for b in range(batch_size):
+            # Get sequence data
+            entry_predictions = predictions[b]
+            entry_ground_truth = reference_dict[gt_key][b]
+
+            # Get validity mask
+            validity_key = gt_key + '_validity'
+            assert(validity_key in reference_dict)
+            
+            # Apply validity mask
+            validity = reference_dict[validity_key][b].float()
+            losses = self.calculate_loss(entry_predictions, entry_ground_truth)
+
+            # Ensure dimensions match
+            assert(validity.ndim == losses.ndim)
+            assert(validity.shape[0] == losses.shape[0])
+
+            # Calculate cumulative loss
+            num_valid = torch.sum(validity)
+            accumulated_loss = torch.sum(validity * losses)
+            if num_valid > 1:
+                accumulated_loss /= num_valid
+            num_valid_entries += 1
+            individual_entry_losses.append(accumulated_loss)
+
+        # Return final scalar loss
+        return torch.sum(torch.stack(individual_entry_losses)) / float(num_valid_entries)
+
+class AngularLossWithValidity(BaseLossWithValidity):
+    _to_degrees = 180. / np.pi
+
+    def calculate_loss(self, a, b):
+        a = pitchyaw_to_vector(a)
+        b = pitchyaw_to_vector(b)
+        sim = F.cosine_similarity(a, b, dim=1, eps=1e-8)
+        sim = F.hardtanh_(sim, min_val=-1+1e-8, max_val=1-1e-8)
+        return torch.acos(sim) * self._to_degrees
+
 # Sequence dataset class
 class GazeSequenceDataset(Dataset):
     def __init__(self, root_dir, label_path, transform=None, camera_dirs=None, is_validation=False, 
@@ -282,13 +334,25 @@ def validate_sequence_model(model, valid_dl, loss_func):
                 'gaze_validity': labels_validity
             }
             
-            # Calculate loss using calculate_mean_loss - UPDATED
-            batch_loss = loss_func.calculate_mean_loss(outputs, 'gaze', reference_dict)
-            val_loss += batch_loss.item() * outputs.size(0)
+            # Calculate loss
+            batch_loss = loss_func(outputs, 'gaze', reference_dict)
+            val_loss += batch_loss.item()
             
-            # Calculate angular error with calculate_loss - UPDATED
-            batch_error = loss_func.calculate_loss(outputs, 'gaze', reference_dict)
-            total_ang_error += batch_error.sum().item()
+            # Calculate angular error (simplified as average error for all valid frames)
+            for b in range(outputs.size(0)):
+                valid_indices = labels_validity[b].bool()
+                if valid_indices.sum() > 0:
+                    pred = outputs[b, valid_indices]
+                    gt = labels[b, valid_indices]
+                    
+                    pred_vec = pitchyaw_to_vector(pred)
+                    gt_vec = pitchyaw_to_vector(gt)
+                    
+                    sim = F.cosine_similarity(pred_vec, gt_vec, dim=1, eps=1e-8)
+                    sim = torch.clamp(sim, min=-1+1e-8, max=1-1e-8)
+                    
+                    ang_error = torch.acos(sim) * (180.0 / np.pi)
+                    total_ang_error += ang_error.mean().item()
             
             total_samples += outputs.size(0)
     
@@ -339,13 +403,25 @@ def do_final_full_test(model, valid_dl, loss_func):
                 'gaze_validity': labels_validity
             }
             
-            # Calculate loss using calculate_mean_loss - UPDATED
-            batch_loss = loss_func.calculate_mean_loss(outputs, 'gaze', reference_dict)
-            val_loss += batch_loss.item() * outputs.size(0)
+            # Calculate loss
+            batch_loss = loss_func(outputs, 'gaze', reference_dict)
+            val_loss += batch_loss.item()
             
-            # Calculate angular error using calculate_loss - UPDATED
-            batch_error = loss_func.calculate_loss(outputs, 'gaze', reference_dict)
-            total_ang_error += batch_error.sum().item()
+            # Calculate angular error
+            for b in range(outputs.size(0)):
+                valid_indices = labels_validity[b].bool()
+                if valid_indices.sum() > 0:
+                    pred = outputs[b, valid_indices]
+                    gt = labels[b, valid_indices]
+                    
+                    pred_vec = pitchyaw_to_vector(pred)
+                    gt_vec = pitchyaw_to_vector(gt)
+                    
+                    sim = F.cosine_similarity(pred_vec, gt_vec, dim=1, eps=1e-8)
+                    sim = torch.clamp(sim, min=-1+1e-8, max=1-1e-8)
+                    
+                    ang_error = torch.acos(sim) * (180.0 / np.pi)
+                    total_ang_error += ang_error.mean().item()
             
             total_samples += outputs.size(0)
     
@@ -426,7 +502,7 @@ def train():
         steps_per_epoch = math.ceil(len(train_dl.dataset) / config.batch_size)
 
         # Use angular loss with validity handling
-        loss_func = AngularLoss()
+        loss_func = AngularLossWithValidity()
 
         # Use AdamW optimizer
         optimizer = torch.optim.AdamW(
@@ -446,6 +522,7 @@ def train():
         )
         
         # Initialize mixed precision training
+        # scaler = torch.cuda.amp.GradScaler()
         scaler = torch.amp.GradScaler('cuda')
 
         # Initialize training variables
@@ -486,12 +563,9 @@ def train():
                             'gaze_validity': labels_validity
                         }
                         
-                        # Calculate loss using calculate_mean_loss - UPDATED
-                        train_loss = loss_func.calculate_mean_loss(outputs, 'gaze', reference_dict)
-                        
-                        # Get batch error using calculate_loss - UPDATED
-                        batch_error = loss_func.calculate_loss(outputs, 'gaze', reference_dict)
-
+                        # Calculate loss
+                        train_loss = loss_func(outputs, 'gaze', reference_dict)
+                    
                     # Backward pass
                     scaler.scale(train_loss).backward()
                     
@@ -516,7 +590,6 @@ def train():
                     # Record metrics
                     metrics = {
                         "train/train_loss": train_loss.item(),
-                        "train/angular_error": batch_error.mean().item(),  # ADDED angular error metric
                         "train/epoch": (step + 1 + (steps_per_epoch * epoch)) / steps_per_epoch,
                         "train/example_ct": example_ct,
                         "train/lr": current_lr
@@ -528,7 +601,7 @@ def train():
                     if step % 20 == 0:
                         logger.info(
                             f"Epoch {epoch + 1}, Step {step}: Loss = {train_loss.item():.4f}, "
-                            f"Error = {batch_error.mean().item():.4f}, LR = {current_lr:.6f}"  # ADDED error reporting
+                            f"LR = {current_lr:.6f}"
                         )
 
                     step_ct += 1
