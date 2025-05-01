@@ -21,6 +21,7 @@ from models.common import pitchyaw_to_vector
 from core.gaze import angular_error as np_angular_error
 import torch.nn.functional as F
 
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -39,58 +40,6 @@ def salvage_memory():
     torch.cuda.empty_cache()
     gc.collect()
 
-
-class BaseLossWithValidity(object):
-    def calculate_loss(self, predictions, ground_truth):
-        raise NotImplementedError('Must implement BaseLossWithValidity::calculate_loss')
-
-    def calculate_mean_loss(self, predictions, ground_truth):
-        return torch.mean(self.calculate_loss(predictions, ground_truth))
-
-    def __call__(self, predictions, gt_key, reference_dict):
-        # Process sequence data, assuming shape is B x T x F (if ndim == 3)
-        batch_size = predictions.shape[0]
-
-        individual_entry_losses = []
-        num_valid_entries = 0
-
-        for b in range(batch_size):
-            # Get sequence data
-            entry_predictions = predictions[b]
-            entry_ground_truth = reference_dict[gt_key][b]
-
-            # Get validity mask
-            validity_key = gt_key + '_validity'
-            assert(validity_key in reference_dict)
-            
-            # Apply validity mask
-            validity = reference_dict[validity_key][b].float()
-            losses = self.calculate_loss(entry_predictions, entry_ground_truth)
-
-            # Ensure dimensions match
-            assert(validity.ndim == losses.ndim)
-            assert(validity.shape[0] == losses.shape[0])
-
-            # Calculate cumulative loss
-            num_valid = torch.sum(validity)
-            accumulated_loss = torch.sum(validity * losses)
-            if num_valid > 1:
-                accumulated_loss /= num_valid
-            num_valid_entries += 1
-            individual_entry_losses.append(accumulated_loss)
-
-        # Return final scalar loss
-        return torch.sum(torch.stack(individual_entry_losses)) / float(num_valid_entries)
-
-class AngularLossWithValidity(BaseLossWithValidity):
-    _to_degrees = 180. / np.pi
-
-    def calculate_loss(self, a, b):
-        a = pitchyaw_to_vector(a)
-        b = pitchyaw_to_vector(b)
-        sim = F.cosine_similarity(a, b, dim=1, eps=1e-8)
-        sim = F.hardtanh_(sim, min_val=-1+1e-8, max_val=1-1e-8)
-        return torch.acos(sim) * self._to_degrees
 
 # Sequence dataset class
 class GazeSequenceDataset(Dataset):
@@ -142,24 +91,18 @@ class GazeSequenceDataset(Dataset):
                 step_folders = step_folders[:max_steps_per_folder]
                 logger.info(f"Limit the number of steps used in the folder {data_folder} to {max_steps_per_folder}")
             
-            # Process each step folder
             for step_folder in step_folders:
                 step_path = os.path.join(data_folder_path, step_folder)
                 
-                # Process each camera view
                 for camera_dir in self.camera_dirs:
                     camera_path = os.path.join(step_path, camera_dir)
                     
-                    # Check if the path is valid
                     if not os.path.exists(camera_path):
                         continue
-                    
-                    # Check if necessary subfolders exist
                     if not all(os.path.exists(os.path.join(camera_path, folder)) 
-                              for folder in ['left_eye', 'right_eye', 'face']):
+                            for folder in ['left_eye', 'right_eye', 'face']):
                         continue
                     
-                    # Read image paths
                     left_images = sorted(os.listdir(os.path.join(camera_path, 'left_eye')))
                     right_images = sorted(os.listdir(os.path.join(camera_path, 'right_eye')))
                     face_images = sorted(os.listdir(os.path.join(camera_path, 'face')))
@@ -167,7 +110,6 @@ class GazeSequenceDataset(Dataset):
                     if not (left_images and right_images and face_images):
                         continue
                     
-                    # Read labels
                     label_files = [l for l in os.listdir(camera_path) if l.endswith('.h5')]
                     if not label_files:
                         continue
@@ -176,10 +118,19 @@ class GazeSequenceDataset(Dataset):
                     try:
                         with h5py.File(label_path_h5, 'r') as f:
                             labels = f['face_g_tobii/data'][:]
-                    except:
+                            
+                            # read validity
+                            if 'face_g_tobii/validity' in f:
+                                validity = f['face_g_tobii/validity'][:]
+                            else:
+                                # if not available, create a default validity array with all True values
+                                validity = np.ones(len(labels), dtype=bool)
+                    except Exception as e:
+                        logger.error(f"Error reading h5 file {label_path_h5}: {e}")
                         continue
                     
-                    if len(labels) != len(left_images):
+                    if len(labels) != len(left_images) or len(validity) != len(labels):
+                        logger.warning(f"Mismatch in data lengths for {camera_path}")
                         continue
                     
                     # Create sequence
@@ -188,7 +139,8 @@ class GazeSequenceDataset(Dataset):
                         'left_eye_paths': [os.path.join(camera_path, 'left_eye', img) for img in left_images],
                         'right_eye_paths': [os.path.join(camera_path, 'right_eye', img) for img in right_images],
                         'face_paths': [os.path.join(camera_path, 'face', img) for img in face_images],
-                        'labels': labels
+                        'labels': labels,
+                        'validity': validity  # store validity
                     }
                     
                     # Split the sequence into fixed-length segments
@@ -209,61 +161,59 @@ class GazeSequenceDataset(Dataset):
         return len(self.sequences)
 
     def __getitem__(self, idx):
-        """Return a complete sequence"""
+        """return a sequence of images and labels"""
         seq = self.sequences[idx]
         sequence_id = seq['sequence_id']
         start_idx = seq['start_idx']
         end_idx = seq['end_idx']
         
-        # Get sequence data
+        # get the sequence data
         sequence_data = self.all_frames[sequence_id]
         
-        # Extract paths and labels for this sequence
+        # extract paths and labels for the sequence
         left_eye_paths = sequence_data['left_eye_paths'][start_idx:end_idx]
         right_eye_paths = sequence_data['right_eye_paths'][start_idx:end_idx]
         face_paths = sequence_data['face_paths'][start_idx:end_idx]
         labels = sequence_data['labels'][start_idx:end_idx]
+        validity = sequence_data['validity'][start_idx:end_idx]  # extract validity
         
-        # Prepare lists to store sequence data
         left_seq = []
         right_seq = []
         face_seq = []
         labels_seq = []
+        validity_seq = []
         
-        # Load each frame in the sequence
+        # laod every frame in the sequence
         for i in range(len(left_eye_paths)):
-            # Load images
+            # load images
             left_img = Image.open(left_eye_paths[i]).convert("RGB")
             right_img = Image.open(right_eye_paths[i]).convert("RGB")
             face_img = Image.open(face_paths[i]).convert("RGB")
             
-            # Apply transforms
             if self.transform:
                 left_img = self.transform(left_img)
                 right_img = self.transform(right_img)
                 face_img = self.transform(face_img)
             
-            # Add to sequence
+            # add in the sequence
             left_seq.append(left_img)
             right_seq.append(right_img)
             face_seq.append(face_img)
             labels_seq.append(torch.tensor(labels[i], dtype=torch.float32))
+            validity_seq.append(torch.tensor(validity[i], dtype=torch.bool))  #add validity to the sequence
         
-        # Convert to tensors
         left_seq = torch.stack(left_seq)
         right_seq = torch.stack(right_seq)
         face_seq = torch.stack(face_seq)
         labels_seq = torch.stack(labels_seq)
-        
-        # Create validity mask (assuming all frames are valid)
-        validity = torch.ones(len(left_seq), dtype=torch.bool)
+        validity_seq = torch.stack(validity_seq)  # convert validity to tensor
         
         return {
             'left_eye': left_seq,         # [seq_len, C, H, W]
             'right_eye': right_seq,       # [seq_len, C, H, W]
             'face': face_seq,             # [seq_len, C, H, W]
             'gaze': labels_seq,           # [seq_len, 2]
-            'gaze_validity': validity     # [seq_len]
+            'gaze_validity': validity_seq  # [seq_len]
         }
 
 # Get sequence data loader
@@ -289,7 +239,7 @@ def get_sequence_dataloader(folder_path, label_path, batch_size, sequence_length
     if is_validation:
         dataset.original_full_dataset = dataset
         
-        num_subset = 16  # reduce validation subset size
+        num_subset = 128  # reduce validation subset size
         if len(dataset) > num_subset:
             subset_indices = sorted(np.random.permutation(len(dataset))[:num_subset])
             subset = Subset(dataset, subset_indices)
@@ -310,10 +260,9 @@ def get_sequence_dataloader(folder_path, label_path, batch_size, sequence_length
 
 
 def validate_sequence_model(model, valid_dl, loss_func):
-    """Evaluate sequence model on validation set"""
+    """Evaluate sequence model on validation set with proper validity handling"""
     model.eval()
     val_loss = 0.0
-    total_ang_error = 0.0
     total_samples = 0
     
     with torch.inference_mode():
@@ -322,7 +271,7 @@ def validate_sequence_model(model, valid_dl, loss_func):
             left_eyes = batch_data['left_eye'].to(device, non_blocking=True)     # [B, T, C, H, W]
             right_eyes = batch_data['right_eye'].to(device, non_blocking=True)   # [B, T, C, H, W]
             faces = batch_data['face'].to(device, non_blocking=True)             # [B, T, C, H, W]
-            labels = batch_data['gaze'].to(device, non_blocking=True)           # [B, T, 2]
+            labels = batch_data['gaze'].to(device, non_blocking=True)            # [B, T, 2]
             labels_validity = batch_data['gaze_validity'].to(device, non_blocking=True)  # [B, T]
             
             # Forward pass
@@ -334,34 +283,41 @@ def validate_sequence_model(model, valid_dl, loss_func):
                 'gaze_validity': labels_validity
             }
             
-            # Calculate loss
+            # Calculate loss using loss function that respects validity
             batch_loss = loss_func(outputs, 'gaze', reference_dict)
             val_loss += batch_loss.item()
             
-            # Calculate angular error (simplified as average error for all valid frames)
-            for b in range(outputs.size(0)):
-                valid_indices = labels_validity[b].bool()
-                if valid_indices.sum() > 0:
-                    pred = outputs[b, valid_indices]
-                    gt = labels[b, valid_indices]
+            # # Calculate angular error respecting validity
+            # batch_errors = []
+            # for b in range(outputs.size(0)):
+            #     valid_indices = labels_validity[b].bool()
+            #     if valid_indices.sum() > 0:
+            #         pred = outputs[b, valid_indices]
+            #         gt = labels[b, valid_indices]
                     
-                    pred_vec = pitchyaw_to_vector(pred)
-                    gt_vec = pitchyaw_to_vector(gt)
+            #         pred_vec = pitchyaw_to_vector(pred)
+            #         gt_vec = pitchyaw_to_vector(gt)
                     
-                    sim = F.cosine_similarity(pred_vec, gt_vec, dim=1, eps=1e-8)
-                    sim = torch.clamp(sim, min=-1+1e-8, max=1-1e-8)
+            #         sim = F.cosine_similarity(pred_vec, gt_vec, dim=1, eps=1e-8)
+            #         sim = torch.clamp(sim, min=-1+1e-8, max=1-1e-8)
                     
-                    ang_error = torch.acos(sim) * (180.0 / np.pi)
-                    total_ang_error += ang_error.mean().item()
+            #         ang_error = torch.acos(sim) * (180.0 / np.pi)
+            #         # Average error for this sample
+            #         batch_errors.append(ang_error.mean().item())
             
-            total_samples += outputs.size(0)
+            # # Add average error for this batch
+            # if batch_errors:
+            #     total_ang_error += sum(batch_errors) / len(batch_errors)
+            
+            total_samples += 1
     
-    return val_loss / total_samples, total_ang_error / total_samples
+    # Return average loss and angular error
+    return val_loss / total_samples
 
 
 def do_final_full_test(model, valid_dl, loss_func):
-    """Test sequence model on the full validation dataset"""
-    logger.info("# Starting validating on the full validation dataset...")
+    """Test sequence model on the full validation dataset with proper validity handling"""
+    logger.info("# Starting validation on the full validation dataset...")
     
     # Get original complete dataset
     if isinstance(valid_dl.dataset, Subset) and hasattr(valid_dl.dataset, 'original_full_dataset'):
@@ -378,12 +334,12 @@ def do_final_full_test(model, valid_dl, loss_func):
         pin_memory=True,
     )
     
-    logger.info(f"Create a full validation data loader containing {len(full_dataset)} sequences")
+    logger.info(f"Created a full validation data loader containing {len(full_dataset)} sequences")
     
     model.eval()
     val_loss = 0.0
-    total_ang_error = 0.0
     total_samples = 0
+    total_valid_frames = 0
     
     with torch.inference_mode():
         for batch_data in full_loader:
@@ -403,42 +359,52 @@ def do_final_full_test(model, valid_dl, loss_func):
                 'gaze_validity': labels_validity
             }
             
-            # Calculate loss
+            # Calculate loss using validity-aware loss function
             batch_loss = loss_func(outputs, 'gaze', reference_dict)
             val_loss += batch_loss.item()
             
-            # Calculate angular error
-            for b in range(outputs.size(0)):
-                valid_indices = labels_validity[b].bool()
-                if valid_indices.sum() > 0:
-                    pred = outputs[b, valid_indices]
-                    gt = labels[b, valid_indices]
+            # # Calculate angular error with proper validity handling
+            # batch_errors = []
+            # for b in range(outputs.size(0)):
+            #     valid_indices = labels_validity[b].bool()
+            #     num_valid = valid_indices.sum().item()
+                
+            #     if num_valid > 0:
+            #         total_valid_frames += num_valid
                     
-                    pred_vec = pitchyaw_to_vector(pred)
-                    gt_vec = pitchyaw_to_vector(gt)
+            #         pred = outputs[b, valid_indices]
+            #         gt = labels[b, valid_indices]
                     
-                    sim = F.cosine_similarity(pred_vec, gt_vec, dim=1, eps=1e-8)
-                    sim = torch.clamp(sim, min=-1+1e-8, max=1-1e-8)
+            #         pred_vec = pitchyaw_to_vector(pred)
+            #         gt_vec = pitchyaw_to_vector(gt)
                     
-                    ang_error = torch.acos(sim) * (180.0 / np.pi)
-                    total_ang_error += ang_error.mean().item()
+            #         sim = F.cosine_similarity(pred_vec, gt_vec, dim=1, eps=1e-8)
+            #         sim = torch.clamp(sim, min=-1+1e-8, max=1-1e-8)
+                    
+            #         ang_error = torch.acos(sim) * (180.0 / np.pi)
+            #         # Average error for this sample
+            #         batch_errors.append(ang_error.mean().item())
             
-            total_samples += outputs.size(0)
+            # # Add average error for this batch
+            # if batch_errors:
+            #     total_ang_error += sum(batch_errors) / len(batch_errors)
+            
+            total_samples += 1
     
     final_loss = val_loss / total_samples
-    final_error = total_ang_error / total_samples
     
-    logger.info(f"Full verification results - loss: {final_loss:.4f}, angular error: {final_error:.4f} degrees")
+    logger.info(f"Full validation results - loss: {final_loss:.4f} degrees")
+    logger.info(f"Total valid frames processed: {total_valid_frames}")
     
     wandb.log({
         "final_test/loss": final_loss,
-        "final_test/angular_error": final_error
+        "final_test/valid_frames": total_valid_frames
     })
     
     wandb.summary["final_test_loss"] = final_loss
-    wandb.summary["final_test_angular_error"] = final_error
+    wandb.summary["final_test_valid_frames"] = total_valid_frames
     
-    return final_loss, final_error
+    return final_loss
 
 def train():
     logger.info("Starting training with sequence data...")
@@ -446,16 +412,22 @@ def train():
     # Initialize base model
     base_model = WholeModel().to(device)
     
-    # Create sequence model - now importing from your model file
+    # Create sequence model
     model = SequentialWholeModel(base_model).to(device)
 
     early_stopper = EarlyStopping(patience=5, min_delta=1e-3)
 
     '''Tau'''
-    dataset_path = "/scratch/leuven/374/vsc37415/EVE_large/train"  # dataset path
-    label_excel = "/scratch/leuven/374/vsc37415/EVE_large/train"  # label path
-    validation_dataset_path = "/scratch/leuven/374/vsc37415/EVE_large/val"
+    # dataset_path = "/scratch/leuven/374/vsc37415/EVE_large/train"  # dataset path
+    # label_excel = "/scratch/leuven/374/vsc37415/EVE_large/train"  # label path
+    # validation_dataset_path = "/scratch/leuven/374/vsc37415/EVE_large/val"
+
+    dataset_path = "/scratch/leuven/374/vsc37415/EVE/train"  # dataset path
+    label_excel = "/scratch/leuven/374/vsc37415/EVE/train"  # label path
+    validation_dataset_path = "/scratch/leuven/374/vsc37415/EVE/val"
     '''Tau'''
+
+    
 
     # Start training experiment
     for _ in range(1):
@@ -464,12 +436,15 @@ def train():
             project="pytorch-intro",
             config={
                 "epochs": 30,
-                "batch_size": 4,  # reduce batch size to accommodate sequence data
+                "batch_size": 16,
                 "lr": 2e-5,
                 "weight_decay": 5e-6,  
-                "dropout": random.uniform(0.1, 0.2),  
-                "sequence_length": 30,  # sequence length
-                "max_steps_per_folder": 10  # maximum number of steps to use per folder
+                "dropout": 0.167,   # useless
+                "sequence_length": 30,
+                "max_steps_per_folder": 10,
+                # "max_steps_per_folder": float('inf'), # no limit
+                "warmup_steps_ratio": 0.15,  # Warmup for 10% of total training steps
+                "warmup_start_lr": 1e-7  # Start with tiny non-zero learning rate
             },
         )
 
@@ -498,20 +473,28 @@ def train():
             num_workers=4
         )
         
-        # Calculate steps per epoch
-        steps_per_epoch = math.ceil(len(train_dl.dataset) / config.batch_size)
+        # Calculate steps per epoch and total steps
+        steps_per_epoch = len(train_dl)
+        total_steps = steps_per_epoch * config.epochs
+        
+        # Define warmup parameters for step-based warmup
+        warmup_steps = int(total_steps * config.warmup_steps_ratio)
+        warmup_start_lr = config.warmup_start_lr
+        initial_lr = config.lr
+        
+        logger.info(f"Total training steps: {total_steps}, Warmup steps: {warmup_steps}")
 
         # Use angular loss with validity handling
-        loss_func = AngularLossWithValidity()
+        loss_func = AngularLoss()
 
-        # Use AdamW optimizer
+        # Use AdamW optimizer with warmup_start_lr
         optimizer = torch.optim.AdamW(
             model.parameters(), 
-            lr=config.lr,
+            lr=warmup_start_lr,  # Start with lower learning rate
             weight_decay=config.weight_decay
         )
         
-        # Use ReduceLROnPlateau
+        # Use ReduceLROnPlateau - this will only be used after warmup
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, 
             mode='min',
@@ -522,13 +505,12 @@ def train():
         )
         
         # Initialize mixed precision training
-        # scaler = torch.cuda.amp.GradScaler()
         scaler = torch.amp.GradScaler('cuda')
 
         # Initialize training variables
         example_ct = 0
-        step_ct = 0
-        best_val_error = float('inf')
+        global_step = 0
+        best_val_loss = float('inf')
 
         # Store losses for each epoch
         epoch_train_losses = []
@@ -536,12 +518,25 @@ def train():
 
         for epoch in range(config.epochs):
             logger.info(f"Starting epoch {epoch + 1}/{config.epochs}")
+            
             model.train()
             epoch_loss = 0.0
             samples_count = 0
             
             for step, batch_data in enumerate(train_dl):
                 try:
+                    # Apply step-based warmup
+                    if global_step < warmup_steps:
+                        # Linear warmup
+                        warmup_factor = global_step / warmup_steps
+                        current_lr = warmup_start_lr + (initial_lr - warmup_start_lr) * warmup_factor # initial_lr = config.lr
+                        for param_group in optimizer.param_groups:
+                            param_group['lr'] = current_lr
+                        
+                        # Log warmup progress periodically
+                        if global_step % 20 == 0:
+                            logger.info(f"Warmup step {global_step}/{warmup_steps}, LR = {current_lr:.6f}")
+                    
                     # Get batch data
                     left_eyes = batch_data['left_eye'].to(device, non_blocking=True)
                     right_eyes = batch_data['right_eye'].to(device, non_blocking=True)
@@ -583,6 +578,7 @@ def train():
                     epoch_loss += train_loss.item() * batch_size
                     
                     example_ct += batch_size
+                    global_step += 1
 
                     # Get current learning rate
                     current_lr = optimizer.param_groups[0]['lr']
@@ -592,7 +588,8 @@ def train():
                         "train/train_loss": train_loss.item(),
                         "train/epoch": (step + 1 + (steps_per_epoch * epoch)) / steps_per_epoch,
                         "train/example_ct": example_ct,
-                        "train/lr": current_lr
+                        "train/lr": current_lr,
+                        "train/global_step": global_step
                     }
 
                     wandb.log(metrics)
@@ -600,11 +597,9 @@ def train():
                     # Print training information periodically
                     if step % 20 == 0:
                         logger.info(
-                            f"Epoch {epoch + 1}, Step {step}: Loss = {train_loss.item():.4f}, "
+                            f"Epoch {epoch + 1}, Step {step}, Global Step {global_step}: Loss = {train_loss.item():.4f}, "
                             f"LR = {current_lr:.6f}"
                         )
-
-                    step_ct += 1
 
                 except Exception as e:
                     logger.error(f"Error in training step {step} of epoch {epoch}: {e}")
@@ -618,11 +613,12 @@ def train():
             epoch_train_losses.append(avg_train_loss)
             
             # Validate model
-            val_loss, val_error = validate_sequence_model(model, valid_dl, loss_func)
+            val_loss = validate_sequence_model(model, valid_dl, loss_func)
             epoch_val_losses.append(val_loss)
 
-            # Update learning rate scheduler
-            scheduler.step(val_error)
+            # Update learning rate scheduler - only after warmup
+            if global_step >= warmup_steps:
+                scheduler.step(val_loss)
 
             # Get current learning rate
             current_lr = optimizer.param_groups[0]['lr']
@@ -631,7 +627,6 @@ def train():
             epoch_metrics = {
                 "epoch/train_loss": avg_train_loss,
                 "epoch/val_loss": val_loss,
-                "epoch/val_error": val_error,
                 "epoch/lr": current_lr,
                 "epoch/number": epoch + 1
             }
@@ -643,33 +638,33 @@ def train():
                 ys=[epoch_train_losses, epoch_val_losses],
                 keys=["Train Loss", "Val Loss"],
                 title="Train Loss vs Val Loss",
-                xname="Epoch"
+                xname="Epoch",
+                yname="angular error (degrees)",
             )
             wandb.log({"train_vs_val_loss": train_vs_val_loss})
 
             # Record validation metrics
             val_metrics = {
                 "val/val_loss": val_loss,
-                "val/val_error": val_error,
                 "val/lr": current_lr
             }
             wandb.log(val_metrics)
 
             # Check if this is the best model
-            if val_error < best_val_error:
-                best_val_error = val_error
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
                 # Save the best model
                 best_model_path = f"best_model_epoch_{epoch}.pt"
                 torch.save(model.state_dict(), best_model_path)
-                logger.info(f"Saved best model with error {best_val_error:.4f} to {best_model_path}")
+                logger.info(f"Saved best model with error {best_val_loss:.4f} to {best_model_path}")
 
             # Early stopping check
-            if early_stopper(val_error):
+            if early_stopper(val_loss):
                 logger.info("Early stopping triggered")
                 break
 
             # Record information for each epoch
-            logger.info(f"Epoch: {epoch + 1} completed. Train Loss: {avg_train_loss:.4f}, Val Loss: {val_loss:.4f}, Val Error: {val_error:.4f}, LR: {current_lr:.6f}")
+            logger.info(f"Epoch: {epoch + 1} completed. Train Loss: {avg_train_loss:.4f}, Val Loss: {val_loss:.4f}, LR: {current_lr:.6f}")
             
             # Free memory at the end of epoch
             salvage_memory()
@@ -682,12 +677,11 @@ def train():
 
         # Test on the full validation set
         logger.info("Training completed. Starting full evaluation on the complete validation set...")
-        final_loss, final_error = do_final_full_test(model, valid_dl, loss_func)
+        final_loss = do_final_full_test(model, valid_dl, loss_func)
 
         # Record final results
-        wandb.summary["best_val_error"] = best_val_error
+        wandb.summary["best_val_loss"] = best_val_loss
         wandb.summary["best_model_path"] = best_model_path
-        wandb.summary["final_test_error"] = final_error
         wandb.summary["final_test_loss"] = final_loss
 
         wandb.finish()
