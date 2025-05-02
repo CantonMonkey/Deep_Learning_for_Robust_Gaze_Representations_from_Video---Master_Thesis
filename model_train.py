@@ -1,6 +1,7 @@
 import torch
 from Integrated_model import WholeModel, SequentialWholeModel
 import os
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 import pandas as pd
 from torch.utils.data import Dataset, DataLoader, Subset
 import torch.nn as nn
@@ -218,7 +219,7 @@ class GazeSequenceDataset(Dataset):
 
 # Get sequence data loader
 def get_sequence_dataloader(folder_path, label_path, batch_size, sequence_length=30,
-                           shuffle=True, is_validation=False, num_workers=4, max_steps_per_folder=10):
+                           shuffle=True, is_validation=False, num_workers=8, max_steps_per_folder=10):
     """Create sequence data loader"""
     transform = transforms.Compose([
         transforms.Resize((128, 128)),
@@ -328,9 +329,9 @@ def do_final_full_test(model, valid_dl, loss_func):
     # Create new data loader for the complete dataset
     full_loader = DataLoader(
         full_dataset,
-        batch_size=4,  # reduce batch size to fit GPU memory
+        batch_size=96,  # reduce batch size to fit GPU memory
         shuffle=False,
-        num_workers=4,
+        num_workers=8,
         pin_memory=True,
     )
     
@@ -435,14 +436,15 @@ def train():
         wandb.init(
             project="pytorch-intro",
             config={
-                "epochs": 30,
-                "batch_size": 16,
+                "epochs": 20,
+                "batch_size": 12,
                 "lr": 2e-5,
                 "weight_decay": 5e-6,  
+                "num_workers" : 8,
                 "dropout": 0.167,   # useless
                 "sequence_length": 30,
                 "max_steps_per_folder": 10,
-                # "max_steps_per_folder": float('inf'), # no limit
+                #"max_steps_per_folder": float('inf'), # no limit
                 "warmup_steps_ratio": 0.15,  # Warmup for 10% of total training steps
                 "warmup_start_lr": 1e-7  # Start with tiny non-zero learning rate
             },
@@ -459,7 +461,7 @@ def train():
             sequence_length=config.sequence_length,
             max_steps_per_folder=config.max_steps_per_folder,
             shuffle=True, 
-            num_workers=4
+            num_workers=config.num_workers
         )
         
         valid_dl = get_sequence_dataloader(
@@ -470,7 +472,7 @@ def train():
             max_steps_per_folder=config.max_steps_per_folder,
             shuffle=False,
             is_validation=True,
-            num_workers=4
+            num_workers=config.num_workers
         )
         
         # Calculate steps per epoch and total steps
