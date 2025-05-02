@@ -329,7 +329,7 @@ def do_final_full_test(model, valid_dl, loss_func):
     # Create new data loader for the complete dataset
     full_loader = DataLoader(
         full_dataset,
-        batch_size=96,  # reduce batch size to fit GPU memory
+        batch_size=128,  # reduce batch size to fit GPU memory
         shuffle=False,
         num_workers=8,
         pin_memory=True,
@@ -419,13 +419,13 @@ def train():
     early_stopper = EarlyStopping(patience=5, min_delta=1e-3)
 
     '''Tau'''
-    # dataset_path = "/scratch/leuven/374/vsc37415/EVE_large/train"  # dataset path
-    # label_excel = "/scratch/leuven/374/vsc37415/EVE_large/train"  # label path
-    # validation_dataset_path = "/scratch/leuven/374/vsc37415/EVE_large/val"
+    dataset_path = "/scratch/leuven/374/vsc37415/EVE_large/train"  # dataset path
+    label_excel = "/scratch/leuven/374/vsc37415/EVE_large/train"  # label path
+    validation_dataset_path = "/scratch/leuven/374/vsc37415/EVE_large/val"
 
-    dataset_path = "/scratch/leuven/374/vsc37415/EVE/train"  # dataset path
-    label_excel = "/scratch/leuven/374/vsc37415/EVE/train"  # label path
-    validation_dataset_path = "/scratch/leuven/374/vsc37415/EVE/val"
+    #dataset_path = "/scratch/leuven/374/vsc37415/EVE/train"  # dataset path
+    #label_excel = "/scratch/leuven/374/vsc37415/EVE/train"  # label path
+    #validation_dataset_path = "/scratch/leuven/374/vsc37415/EVE/val"
     '''Tau'''
 
     
@@ -437,16 +437,17 @@ def train():
             project="pytorch-intro",
             config={
                 "epochs": 20,
-                "batch_size": 12,
-                #"lr": 2e-5,
-                "lr": 6e-5,
+                "batch_size": 4,
+                "lr": 2e-5,
+                #"lr": 6e-5,
                 "weight_decay": 5e-6,  
-                "num_workers" : 8,
+                "num_workers" : 6,
                 "dropout": 0.167,   # useless
                 "sequence_length": 30,
-                "max_steps_per_folder": 10,
+                "train_max_steps_per_folder": 10,  # New setting for training
+                "val_max_steps_per_folder": float('inf'),    # New setting for validation
                 #"max_steps_per_folder": float('inf'), # no limit
-                "warmup_steps_ratio": 0.15,  # Warmup for 10% of total training steps
+                "warmup_steps_ratio": 0.1,  # Warmup for 10% of total training steps
                 "warmup_start_lr": 1e-7  # Start with tiny non-zero learning rate
             },
         )
@@ -460,7 +461,7 @@ def train():
             label_excel, 
             batch_size=config.batch_size, 
             sequence_length=config.sequence_length,
-            max_steps_per_folder=config.max_steps_per_folder,
+            max_steps_per_folder=config.train_max_steps_per_folder,  # Use training-specific limit
             shuffle=True, 
             num_workers=config.num_workers
         )
@@ -470,12 +471,13 @@ def train():
             label_excel, 
             batch_size=config.batch_size,
             sequence_length=config.sequence_length,
-            max_steps_per_folder=config.max_steps_per_folder,
+            max_steps_per_folder=config.val_max_steps_per_folder,  # Use validation-specific limit
             shuffle=False,
             is_validation=True,
             num_workers=config.num_workers
         )
         
+        # Continue with the rest of the training code as before...
         # Calculate steps per epoch and total steps
         steps_per_epoch = len(train_dl)
         total_steps = steps_per_epoch * config.epochs
