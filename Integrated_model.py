@@ -23,7 +23,7 @@ class ResNetFeatureExtractor(nn.Module):
         super(ResNetFeatureExtractor, self).__init__()
         resnet = models.resnet18(pretrained=True)
 
-        self.feature_extractor = nn.Sequential(*list(resnet.children())[:5])  # output shape: (bs, 64, h/4, w/4)  # 64 channels, 1/4 of the original image size
+        self.feature_extractor = nn.Sequential(*list(resnet.children())[:6])  # output shape: (bs, 64, h/4, w/4)  # 64 channels, 1/4 of the original image size
 
         for param in self.feature_extractor.parameters():
             param.requires_grad = False
@@ -37,7 +37,7 @@ class ResNetFeatureExtractor(nn.Module):
 
 
 class FeatureFusion(torch.nn.Module):
-    def __init__(self, total_ch=192):
+    def __init__(self, total_ch=384):
         super(FeatureFusion, self).__init__()
         self.gn = torch.nn.GroupNorm(24, total_ch)
         self.channel_attention = MS_CAM(channels=total_ch)
@@ -46,7 +46,7 @@ class FeatureFusion(torch.nn.Module):
     def forward(self, left_eye, right_eye, face):
         concate = torch.cat((left_eye, right_eye, face), 1)
         out = self.gn(concate)
-        out = self.dropout(out)
+        #out = self.dropout(out)
         return out
 
 # from vit_pytorch import ViT
@@ -62,7 +62,7 @@ class Attention(torch.nn.Module):
     in forward, reshape to (bs, h*w, ch)
     output shape: (bs, h*w, ch)
     """
-    def __init__(self, total_ch=192):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
+    def __init__(self, total_ch=384):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
         super(Attention, self).__init__()
         # self.self_att = Transformer(
         #         dim = total_ch,   # if not using the total_ch, should project the input to the dim of the transformer first
@@ -74,12 +74,12 @@ class Attention(torch.nn.Module):
         #         # def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout = 0.)
         # )
         self.self_att = Transformer(
-        dim = total_ch,
-        depth = 4,
-        heads = 6,
-        dim_head = 64,  # Fixed dimension may be more stable than relative dimension. right?
-        mlp_dim = 512,
-        dropout = 0.15
+            dim = total_ch,
+            depth = 2, # decrease the depth a bit 
+            heads = 9,
+            dim_head = 64,  # Fixed dimension may be more stable than relative dimension. right? maybe other things 160
+            mlp_dim = 512,
+            dropout = 0.15
         )
 
 
@@ -100,7 +100,7 @@ class Temporal(torch.nn.Module):
     output shape: (bs, seq_len, ch)  # seq_len = h*w 
     h_n shape: (num_layers, bs, hidden_size)
     """
-    def __init__(self, total_ch = 192):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
+    def __init__(self, total_ch = 384):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
         super(Temporal, self).__init__()
         self.gru = torch.nn.GRU(input_size=total_ch, # ????
                                 hidden_size=512,    # the more hidden size, the complexer memory
@@ -113,7 +113,7 @@ class Temporal(torch.nn.Module):
                                 dtype=None)
         
         # self.gru = nn.GRU(
-        #     input_size=192,  # Channel number of attention output from base model
+        #     input_size=384,  # Channel number of attention output from base model
         #     hidden_size=512,
         #     num_layers=2,
         #     batch_first=True,
@@ -149,7 +149,7 @@ class GazePrediction(nn.Module):
         #print("enter FC layer")
         # Ensure x is flat going into the FC layer (it should already be flat if coming from GAP)
         x = x.view(x.size(0), -1)  # Flatten to [bs, features]
-        x = self.dropout(x)
+        #x = self.dropout(x)
         x = self.fc1(x)
         x = self.fc2(x)
 
@@ -201,13 +201,13 @@ class SequentialWholeModel(nn.Module):
             
         # Add sequential GRU layer
         # self.gru = nn.GRU(
-        #     input_size=192,  # Channel number of attention output from base model
+        #     input_size=384,  # Channel number of attention output from base model
         #     hidden_size=512,
         #     num_layers=2,
         #     batch_first=True,
         #     dropout=0.1
         # )
-        self.gru = Temporal(total_ch=192)  # Use the custom GRU class defined above
+        self.gru = Temporal(total_ch=384)  # Use the custom GRU class defined above
         
         # Prediction layer transplanted from WholeModel
         self.prediction = GazePrediction(input_dim=512, num_classes=2)
