@@ -643,8 +643,8 @@ def train():
                 ys=[epoch_train_losses, epoch_val_losses],
                 keys=["Train Loss", "Val Loss"],
                 title="Train Loss vs Val Loss",
-                xname="Epoch",
-                yname="angular error (degrees)"
+                xname="Epoch"
+                # yname="angular error (degrees)"
             )
             wandb.log({"train_vs_val_loss": train_vs_val_loss})
 
