@@ -53,14 +53,16 @@ class GazeSequenceDataset(Dataset):
         self.sequence_length = sequence_length  # sequence length
 
         if camera_dirs is None:
-            self.camera_dirs = ['l', 'r', 'c']
+            # self.camera_dirs = ['l', 'r', 'c']
+            self.camera_dirs = ['l', 'r', 'c', 'basler']
         else:
             self.camera_dirs = camera_dirs
         
         # Get data folders
         self.data_folders = sorted([
             d for d in os.listdir(root_dir)
-            if os.path.isdir(os.path.join(root_dir, d)) and (d.startswith('train') or d.startswith('test') or d.startswith('val'))
+            # if os.path.isdir(os.path.join(root_dir, d)) and (d.startswith('train') or d.startswith('test') or d.startswith('val'))
+            if os.path.isdir(os.path.join(root_dir, d)) and (d.startswith('train') or d.startswith('val'))
         ])
         
         # Filter folders
@@ -416,16 +418,16 @@ def train():
     # Create sequence model
     model = SequentialWholeModel(base_model).to(device)
 
-    early_stopper = EarlyStopping(patience=5, min_delta=1e-3)
+    early_stopper = EarlyStopping(patience=3, min_delta=1e-3)
 
     '''Tau'''
-    dataset_path = "/scratch/leuven/374/vsc37415/EVE_large/train"  # dataset path
-    label_excel = "/scratch/leuven/374/vsc37415/EVE_large/train"  # label path
-    validation_dataset_path = "/scratch/leuven/374/vsc37415/EVE_large/val"
+    #dataset_path = "/scratch/leuven/374/vsc37415/EVE_large/train"  # dataset path
+    #label_excel = "/scratch/leuven/374/vsc37415/EVE_large/train"  # label path
+    #validation_dataset_path = "/scratch/leuven/374/vsc37415/EVE_large/val"
 
-    #dataset_path = "/scratch/leuven/374/vsc37415/EVE/train"  # dataset path
-    #label_excel = "/scratch/leuven/374/vsc37415/EVE/train"  # label path
-    #validation_dataset_path = "/scratch/leuven/374/vsc37415/EVE/val"
+    dataset_path = "/scratch/leuven/374/vsc37415/EVE/train"  # dataset path
+    label_excel = "/scratch/leuven/374/vsc37415/EVE/train"  # label path
+    validation_dataset_path = "/scratch/leuven/374/vsc37415/EVE/val"
     '''Tau'''
 
     
@@ -438,16 +440,17 @@ def train():
             config={
                 "epochs": 20,
                 "batch_size": 4,
-                "lr": 2e-5,
+                "lr": 2e-4,
                 #"lr": 6e-5,
                 "weight_decay": 5e-6,  
                 "num_workers" : 6,
                 "dropout": 0.167,   # useless
                 "sequence_length": 30,
-                "train_max_steps_per_folder": 10,  # New setting for training
+                "train_max_steps_per_folder": 5,  # New setting for training
                 "val_max_steps_per_folder": float('inf'),    # New setting for validation
                 #"max_steps_per_folder": float('inf'), # no limit
-                "warmup_steps_ratio": 0.1,  # Warmup for 10% of total training steps
+                #"warmup_steps_ratio": 0.1,  # Warmup for 10% of total training steps
+                "warmup_steps_ratio": 0.0,  # No warmup
                 "warmup_start_lr": 1e-7  # Start with tiny non-zero learning rate
             },
         )
@@ -495,7 +498,8 @@ def train():
         # Use AdamW optimizer with warmup_start_lr
         optimizer = torch.optim.AdamW(
             model.parameters(), 
-            lr=warmup_start_lr,  # Start with lower learning rate
+            # lr=warmup_start_lr,  # Start with lower learning rate
+            lr=config.lr, 
             weight_decay=config.weight_decay
         )
         

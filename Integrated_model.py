@@ -32,7 +32,27 @@ class ResNetFeatureExtractor(nn.Module):
     def forward(self, x):
         x = self.feature_extractor(x)  
         return x  # (bs, ch, h, w)
+    
+# class ResNetFeatureExtractor(nn.Module):
+#     def __init__(self):
+#         super(ResNetFeatureExtractor, self).__init__()
+#         resnet = models.resnet18(pretrained=True)
 
+#         self.feature_extractor = nn.Sequential(*list(resnet.children())[:-3])
+        
+#         self.feature_extractor[-1][0].conv1.stride = (1, 1) # normally resnet has stride = 2 in layer 3 this will downsample from 8x8 to 4x4. This is to avoid this. More spatil features are preserved
+#         self.feature_extractor[-1][0].downsample[0].stride = (1, 1) 
+
+#         self.reduce_channels = nn.Conv2d(256, 128, kernel_size=1) # kernel_size 1 only changes the number of channels and doesn't mess with the spatial size
+        
+#         for param in self.feature_extractor.parameters():
+#             param.requires_grad = False
+
+#     def forward(self, x):
+#         x = self.feature_extractor(x)  
+#         x = self.reduce_channels(x)   
+#         #print("ResNetFeatureExtractor", x.shape)
+#         return x  # (bs, ch, h, w)
 
 
 
