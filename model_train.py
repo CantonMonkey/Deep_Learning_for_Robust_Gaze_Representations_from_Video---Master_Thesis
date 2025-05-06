@@ -437,7 +437,7 @@ def train():
             project="pytorch-intro",
             config={
                 "epochs": 20,
-                "batch_size": 12,
+                "batch_size": 160,
                 #"lr": 2e-5,
                 "lr": 6e-5,
                 "weight_decay": 5e-6,  
@@ -537,7 +537,7 @@ def train():
                             param_group['lr'] = current_lr
                         
                         # Log warmup progress periodically
-                        if global_step % 20 == 0:
+                        if global_step % 400 == 0:
                             logger.info(f"Warmup step {global_step}/{warmup_steps}, LR = {current_lr:.6f}")
                     
                     # Get batch data
@@ -598,7 +598,7 @@ def train():
                     wandb.log(metrics)
 
                     # Print training information periodically
-                    if step % 20 == 0:
+                    if step % 400 == 0:
                         logger.info(
                             f"Epoch {epoch + 1}, Step {step}, Global Step {global_step}: Loss = {train_loss.item():.4f}, "
                             f"LR = {current_lr:.6f}"
