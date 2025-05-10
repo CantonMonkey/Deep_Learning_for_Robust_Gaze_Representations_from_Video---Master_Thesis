@@ -60,7 +60,7 @@ class FeatureFusion(torch.nn.Module):
     def __init__(self, total_ch=320):
         super(FeatureFusion, self).__init__()
         self.gn = torch.nn.GroupNorm(20, total_ch)
-        self.channel_attention = MS_CAM(channels=total_ch)
+        # self.channel_attention = MS_CAM(channels=total_ch)
         self.dropout = nn.Dropout(0.15)
             
     def forward(self, left_eye, right_eye, face):
@@ -143,7 +143,7 @@ class Temporal(torch.nn.Module):
     
         
 
-    def forward(self, x_att, h_state=None):
+    def forward(self, x_att, h_state):
         out, h_n = self.gru(x_att, h_state) # read the source, there are 2 outputs, but what is h_n here? should be the hidden state of the last layer?
 
         return out, h_n   # okay one important thing is to use h_n or out for fc layer?
@@ -243,7 +243,7 @@ class SequentialWholeModel(nn.Module):
         # Prediction layer transplanted from WholeModel
         self.prediction = GazePrediction(input_dim=512, num_classes=2)
     
-    def forward(self, left_eyes, right_eyes, faces):
+    def forward(self, left_eyes, right_eyes, faces, h_state):
         """
         Process sequence input
         Args:
@@ -278,7 +278,7 @@ class SequentialWholeModel(nn.Module):
         frame_features = torch.stack(frame_features, dim=1)  # [B, seq_len, C]
         
         # Process sequence through GRU
-        rnn_out, _ = self.gru(frame_features)  # [B, seq_len, hidden_size]
+        rnn_out, h_state = self.gru(frame_features, h_state)  # [B, seq_len, hidden_size]
         
         # Prepare to store predictions for each time step
         outputs = []
@@ -292,7 +292,4 @@ class SequentialWholeModel(nn.Module):
         # Stack predictions from all time steps
         outputs = torch.stack(outputs, dim=1)  # [B, seq_len, 2]
         
-        return outputs
-
-
-    
+        return outputs, h_state
