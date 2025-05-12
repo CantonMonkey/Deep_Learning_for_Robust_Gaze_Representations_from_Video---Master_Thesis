@@ -57,9 +57,9 @@ class ResNetFeatureExtractor(nn.Module):
 
 
 class FeatureFusion(torch.nn.Module):
-    def __init__(self, total_ch=320):
+    def __init__(self, total_ch=288):
         super(FeatureFusion, self).__init__()
-        self.gn = torch.nn.GroupNorm(20, total_ch)
+        self.gn = torch.nn.GroupNorm(18, total_ch)
         # self.channel_attention = MS_CAM(channels=total_ch)
         self.dropout = nn.Dropout(0.15)
             
@@ -82,7 +82,7 @@ class Attention(torch.nn.Module):
     in forward, reshape to (bs, h*w, ch)
     output shape: (bs, h*w, ch)
     """
-    def __init__(self, total_ch=320):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
+    def __init__(self, total_ch=288):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
         super(Attention, self).__init__()
         # self.self_att = Transformer(
         #         dim = total_ch,   # if not using the total_ch, should project the input to the dim of the transformer first
@@ -120,7 +120,7 @@ class Temporal(torch.nn.Module):
     output shape: (bs, seq_len, ch)  # seq_len = h*w 
     h_n shape: (num_layers, bs, hidden_size)
     """
-    def __init__(self, total_ch = 320):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
+    def __init__(self, total_ch = 288):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
         super(Temporal, self).__init__()
         self.gru = torch.nn.GRU(input_size=total_ch, # ????
                                 hidden_size=512,    # the more hidden size, the complexer memory
@@ -133,7 +133,7 @@ class Temporal(torch.nn.Module):
                                 dtype=None)
         
         # self.gru = nn.GRU(
-        #     input_size=320,  # Channel number of attention output from base model
+        #     input_size=288,  # Channel number of attention output from base model
         #     hidden_size=512,
         #     num_layers=2,
         #     batch_first=True,
@@ -189,7 +189,7 @@ class WholeModel(nn.Module):
 
         self.uni_extractor = ResNetFeatureExtractor()
 
-        self.face_ch_reduce = nn.Conv2d(128, 64, kernel_size=1)
+        self.face_ch_reduce = nn.Conv2d(128, 32, kernel_size=1)
         
         # Feature fusion
         self.feature_fusion = FeatureFusion()
@@ -232,13 +232,13 @@ class SequentialWholeModel(nn.Module):
             
         # Add sequential GRU layer
         # self.gru = nn.GRU(
-        #     input_size=320,  # Channel number of attention output from base model
+        #     input_size=288,  # Channel number of attention output from base model
         #     hidden_size=512,
         #     num_layers=2,
         #     batch_first=True,
         #     dropout=0.1
         # )
-        self.gru = Temporal(total_ch=320)  # Use the custom GRU class defined above
+        self.gru = Temporal(total_ch=288)  # Use the custom GRU class defined above
         
         # Prediction layer transplanted from WholeModel
         self.prediction = GazePrediction(input_dim=512, num_classes=2)
