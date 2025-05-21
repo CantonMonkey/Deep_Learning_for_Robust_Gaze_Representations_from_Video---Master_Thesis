@@ -1,77 +1,45 @@
-#no RELU, low dropout, and overfitting.
 
-## layer 1, understand strides and kernel_size concepts, we do not freeze the layers i think? maybe if there is overfitting we can freeze resnet for less training parameters
-import torch
 import torch.nn as nn
 import torchvision.models as models
 import torch.nn.functional as F
 import logging
-import sys
-
-'''feature fusion'''
-from fusion import AFF, iAFF, DAF, MS_CAM
-from aff_resnet import resnet18 as aff_resnet18
-''''''
-
+# from vit_pytorch import ViT
+# https://github.com/lucidrains/vit-pytorch/blob/main/vit_pytorch/vit.py
+from vit_pytorch.vit import Transformer
 import logging
 logger = logging.getLogger(__name__)
 
-# https://flypix.ai/blog/image-recognition-algorithms/ why I choosed only first few layers for feature extraction, upto middle layers are sufficient to provide information about eyes
-# In higher layers of the network, detailed pixel information is lost whilethe high level content of the image is preserved. Clear Explanation is here(https://ai.stackexchange.com/questions/30038/why-do-we-lose-detail-of-an-image-as-we-go-deeper-into-a-convnet)
-# class ResNetFeatureExtractor(nn.Module):
-#     def __init__(self):
-#         super(ResNetFeatureExtractor, self).__init__()
-#         resnet = models.resnet18(pretrained=True)
-
-#         self.feature_extractor = nn.Sequential(*list(resnet.children())[:6])  # output shape: (bs, 64, h/4, w/4)  # 64 channels, 1/4 of the original image size
-
-#         for param in self.feature_extractor.parameters():
-#             param.requires_grad = False
-
-
-#     def forward(self, x):
-#         x = self.feature_extractor(x)  
-#         return x  # (bs, ch, h, w)
-    
 class ResNetFeatureExtractor(nn.Module):
     def __init__(self):
         super(ResNetFeatureExtractor, self).__init__()
         resnet = models.resnet18(pretrained=True)
 
-        self.feature_extractor = nn.Sequential(*list(resnet.children())[:-3])
-        
-        self.feature_extractor[-1][0].conv1.stride = (1, 1) # normally resnet has stride = 2 in layer 3 this will downsample from 8x8 to 4x4. This is to avoid this. More spatil features are preserved
-        self.feature_extractor[-1][0].downsample[0].stride = (1, 1) 
+        self.feature_extractor = nn.Sequential(*list(resnet.children())[:6])  # output shape: (bs, 64, h/4, w/4)  # 64 channels, 1/4 of the original image size
 
-        self.reduce_channels = nn.Conv2d(256, 128, kernel_size=1) # kernel_size 1 only changes the number of channels and doesn't mess with the spatial size
-        
         for param in self.feature_extractor.parameters():
             param.requires_grad = False
 
+
     def forward(self, x):
         x = self.feature_extractor(x)  
-        x = self.reduce_channels(x)   
-        #print("ResNetFeatureExtractor", x.shape)
         return x  # (bs, ch, h, w)
+    
+
 
 
 
 class FeatureFusion(torch.nn.Module):
     def __init__(self, total_ch=288):
         super(FeatureFusion, self).__init__()
-        self.gn = torch.nn.GroupNorm(18, total_ch)
-        # self.channel_attention = MS_CAM(channels=total_ch)
-        self.dropout = nn.Dropout(0.15)
+        self.gn = torch.nn.GroupNorm(24, total_ch)
             
     def forward(self, left_eye, right_eye, face):
         concate = torch.cat((left_eye, right_eye, face), 1)
         out = self.gn(concate)
-        #out = self.dropout(out)
         return out
 
-# from vit_pytorch import ViT
-# https://github.com/lucidrains/vit-pytorch/blob/main/vit_pytorch/vit.py
-from vit_pytorch.vit import Transformer
+
+
 
 
 class Attention(torch.nn.Module):
@@ -84,20 +52,11 @@ class Attention(torch.nn.Module):
     """
     def __init__(self, total_ch=288):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
         super(Attention, self).__init__()
-        # self.self_att = Transformer(
-        #         dim = total_ch,   # if not using the total_ch, should project the input to the dim of the transformer first
-        #         depth = 3,
-        #         heads = 8,
-        #         dim_head = total_ch//8,  #dim//heads
-        #         mlp_dim = 512,  # the hidden layer dim of the mlp (the hidden layer of the feedforward network, which is applied to each position (each token) separately and identically)
-        #         dropout = 0.1
-        #         # def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout = 0.)
-        # )
         self.self_att = Transformer(
             dim = total_ch,
             depth = 2, # decrease the depth a bit 
-            heads = 8,
-            dim_head = total_ch//8,  # Fixed dimension may be more stable than relative dimension. right? maybe other things 160
+            heads = 9,
+            dim_head = 64,  # Fixed dimension may be more stable than relative dimension. right? maybe other things 160
             mlp_dim = 512,
             dropout = 0.15
         )
@@ -122,28 +81,21 @@ class Temporal(torch.nn.Module):
     """
     def __init__(self, total_ch = 288):    # the gaze_dims should be defined later, according to the dataset and what we wanna predict, for instance, 3 gaze dims, PoG (x,y,z)
         super(Temporal, self).__init__()
-        self.gru = torch.nn.GRU(input_size=total_ch, # ????
+        self.gru = torch.nn.GRU(input_size=total_ch,
                                 hidden_size=512,    # the more hidden size, the complexer memory
                                 num_layers=2, #2 or 3       # does this represent the number of GRU blocks? or say the number of consecutive frames we wanna consider?
                                 bias=True, 
-                                batch_first=True,    # True
+                                batch_first=True,    
                                 dropout=0.15, 
                                 bidirectional=False,   
                                 device=None, 
                                 dtype=None)
         
-        # self.gru = nn.GRU(
-        #     input_size=288,  # Channel number of attention output from base model
-        #     hidden_size=512,
-        #     num_layers=2,
-        #     batch_first=True,
-        #     dropout=0.1
-        # )
         
     
         
 
-    def forward(self, x_att, h_state):
+    def forward(self, x_att, h_state=None):
         out, h_n = self.gru(x_att, h_state) # read the source, there are 2 outputs, but what is h_n here? should be the hidden state of the last layer?
 
         return out, h_n   # okay one important thing is to use h_n or out for fc layer?
@@ -160,7 +112,7 @@ class GazePrediction(nn.Module):
     def __init__(self, input_dim, num_classes):
         super(GazePrediction, self).__init__()
         # self.fc = nn.Linear(input_dim, num_classes)
-        self.dropout = nn.Dropout(0.15)
+        self.dropout = nn.Dropout(0.2)
         self.fc1 = nn.Linear(input_dim, 128)
         self.bn = nn.BatchNorm1d(128)
         self.fc2 = nn.Linear(128, num_classes)
@@ -180,44 +132,29 @@ class WholeModel(nn.Module):
     def __init__(self):
         super(WholeModel, self).__init__()
 
-        # Feature extractors
-        self.left_eye_extractor = ResNetFeatureExtractor()
-        self.right_eye_extractor = ResNetFeatureExtractor()
-        self.face_extractor = ResNetFeatureExtractor()
-
-        self.eyes_extractor = ResNetFeatureExtractor()
-
         self.uni_extractor = ResNetFeatureExtractor()
 
         self.face_ch_reduce = nn.Conv2d(128, 32, kernel_size=1)
         
-        # Feature fusion
         self.feature_fusion = FeatureFusion()
         
-        # Attention mechanism
         self.attention = Attention()
-        
-        # GRU and prediction layers removed
     
     def forward(self, left_eye_img, right_eye_img, face_img):
         # Feature extraction
-        # left_feat = self.uni_extractor(left_eye_img)
-        # right_feat = self.uni_extractor(right_eye_img)
-        # face_feat = self.uni_extractor(face_img)
-        left_feat = self.eyes_extractor(left_eye_img)  # [B, C, H, W]
-        right_feat = self.eyes_extractor(right_eye_img)
-        face_feat = self.face_extractor(face_img)
-
+        left_feat = self.uni_extractor(left_eye_img)
+        right_feat = self.uni_extractor(right_eye_img)
+        face_feat = self.uni_extractor(face_img)
+    
+        # face feat reduction
         face_feat = self.face_ch_reduce(face_feat)
         
-        
-        # Feature fusion
+        # Feature fusion (GN)
         fused = self.feature_fusion(left_feat, right_feat, face_feat)
         
-        # Attention processing
+        # ViT
         att_out = self.attention(fused)  # [B, H*W, C]
         
-        # Return features directly without prediction
         return att_out
 
 class SequentialWholeModel(nn.Module):
@@ -230,20 +167,13 @@ class SequentialWholeModel(nn.Module):
         else:
             self.base_model = WholeModel()
             
-        # Add sequential GRU layer
-        # self.gru = nn.GRU(
-        #     input_size=288,  # Channel number of attention output from base model
-        #     hidden_size=512,
-        #     num_layers=2,
-        #     batch_first=True,
-        #     dropout=0.1
-        # )
-        self.gru = Temporal(total_ch=288)  # Use the custom GRU class defined above
+
+        self.gru = Temporal(total_ch=288)
         
         # Prediction layer transplanted from WholeModel
         self.prediction = GazePrediction(input_dim=512, num_classes=2)
     
-    def forward(self, left_eyes, right_eyes, faces, h_state):
+    def forward(self, left_eyes, right_eyes, faces):
         """
         Process sequence input
         Args:
@@ -255,6 +185,7 @@ class SequentialWholeModel(nn.Module):
         """
         seq_len = left_eyes.shape[1]
         batch_size = left_eyes.shape[0]
+        self.uni_extractor = ResNetFeatureExtractor()
         
         # Prepare to store features for each frame
         frame_features = []
@@ -278,7 +209,7 @@ class SequentialWholeModel(nn.Module):
         frame_features = torch.stack(frame_features, dim=1)  # [B, seq_len, C]
         
         # Process sequence through GRU
-        rnn_out, h_state = self.gru(frame_features, h_state)  # [B, seq_len, hidden_size]
+        rnn_out, _ = self.gru(frame_features)  # [B, seq_len, hidden_size]
         
         # Prepare to store predictions for each time step
         outputs = []
@@ -292,4 +223,4 @@ class SequentialWholeModel(nn.Module):
         # Stack predictions from all time steps
         outputs = torch.stack(outputs, dim=1)  # [B, seq_len, 2]
         
-        return outputs, h_state
+        return outputs
