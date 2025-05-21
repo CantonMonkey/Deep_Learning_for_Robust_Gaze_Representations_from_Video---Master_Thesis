@@ -42,7 +42,6 @@ def salvage_memory():
     gc.collect()
 
 
-# Sequence dataset class
 class GazeSequenceDataset(Dataset):
     def __init__(self, root_dir, label_path, transform=None, camera_dirs=None, is_validation=False, 
                  sequence_length=30, max_steps_per_folder=10):
@@ -58,14 +57,12 @@ class GazeSequenceDataset(Dataset):
         else:
             self.camera_dirs = camera_dirs
         
-        # Get data folders
         self.data_folders = sorted([
             d for d in os.listdir(root_dir)
             # if os.path.isdir(os.path.join(root_dir, d)) and (d.startswith('train') or d.startswith('test') or d.startswith('val'))
             if os.path.isdir(os.path.join(root_dir, d)) and (d.startswith('train') or d.startswith('val'))
         ])
         
-        # Filter folders
         if not is_validation:
             self.data_folders = [d for d in self.data_folders if d.startswith('train')]
         else:
@@ -73,16 +70,11 @@ class GazeSequenceDataset(Dataset):
             
         logger.info(f"Data folder used: {self.data_folders}")
         
-        # Store sequence information
         self.sequences = []
-        
-        # Temporarily store all frame paths and labels
         self.all_frames = {}
         
-        # Extract sequences from data folders
         for data_folder in self.data_folders:
             data_folder_path = os.path.join(root_dir, data_folder)
-            # Get step folders
             step_folders = sorted([
                 d for d in os.listdir(data_folder_path)
                 if os.path.isdir(os.path.join(data_folder_path, d)) and d.startswith('step')
@@ -136,7 +128,7 @@ class GazeSequenceDataset(Dataset):
                         logger.warning(f"Mismatch in data lengths for {camera_path}")
                         continue
                     
-                    # Create sequence
+                    # create sequence
                     sequence_id = f"{data_folder}{step_folder}{camera_dir}"
                     self.all_frames[sequence_id] = {
                         'left_eye_paths': [os.path.join(camera_path, 'left_eye', img) for img in left_images],
@@ -146,7 +138,7 @@ class GazeSequenceDataset(Dataset):
                         'validity': validity  # store validity
                     }
                     
-                    # Split the sequence into fixed-length segments
+                    # split the sequence into fixed-length segments
                     num_frames = len(left_images)
                     for seq_start in range(0, num_frames, self.sequence_length):
                         seq_end = min(seq_start + self.sequence_length, num_frames)
@@ -186,7 +178,6 @@ class GazeSequenceDataset(Dataset):
         labels_seq = []
         validity_seq = []
         
-        # laod every frame in the sequence
         for i in range(len(left_eye_paths)):
             # load images
             left_img = Image.open(left_eye_paths[i]).convert("RGB")
@@ -198,7 +189,6 @@ class GazeSequenceDataset(Dataset):
                 right_img = self.transform(right_img)
                 face_img = self.transform(face_img)
             
-            # add in the sequence
             left_seq.append(left_img)
             right_seq.append(right_img)
             face_seq.append(face_img)
@@ -218,8 +208,7 @@ class GazeSequenceDataset(Dataset):
             'gaze': labels_seq,           # [seq_len, 2]
             'gaze_validity': validity_seq  # [seq_len]
         }
-
-# Get sequence data loader
+    
 def get_sequence_dataloader(folder_path, label_path, batch_size, sequence_length=30,
                            shuffle=True, is_validation=False, num_workers=8, max_steps_per_folder=10):
     """Create sequence data loader"""
@@ -294,52 +283,46 @@ def validate_sequence_model(model, valid_dl, loss_func, current_step=None):
 
                 outputs, hidden = model(left_chunk, right_chunk, face_chunk, hidden)
                 
-                # Prepare reference dictionary
+                # prepare reference dictionary
                 reference_dict = {
                     'gaze': label_chunk,
                     'gaze_validity': valid_chunk
                 }
                     
-                # Calculate loss (for 1 chunk)
+                # loss func
                 chunk_loss = loss_func(outputs, 'gaze', reference_dict) 
                 chunk_losses.append(chunk_loss)
-
+                
                 logger.info(f"[Validation] Batch {batch_idx}, Chunk {chunk_idx+1}: Frames {t} to {min(t+chunk_size, sequence_len) - 1}, Loss = {chunk_loss.item():.4f}")
 
             batch_loss = torch.stack(chunk_losses).mean()
             val_loss += batch_loss.item()
-            total_samples += 1  # tot sample is for the whole batch (number of sequences with 30 frames)
+            total_samples += 1
     
-    # Calculate average validation loss (for 30 frmaes)
+    # calculate avg validation loss
     avg_val_loss = val_loss / total_samples if total_samples > 0 else 0
     
-    # Log validation metrics only once at the end
+    # log validation metrics only once at the end of batch
     all_val_metrics["val/avg_loss"] = avg_val_loss
     
-    # Log all validation metrics without incrementing wandb's internal step counter
-    # the input step is used to log the metrics at the current global step (avoid trancation)
     if current_step is not None:
         wandb.log(all_val_metrics, step=current_step, commit=False)
     else:
         wandb.log(all_val_metrics, commit=False)
     
-    return avg_val_loss #(for 30 frames)
+    return avg_val_loss
 
 
 def train():
     logger.info("Starting training with sequence data...")
 
     base_model = WholeModel().to(device)
-    
     model = SequentialWholeModel(base_model).to(device)
-
     early_stopper = EarlyStopping(patience=3, min_delta=1e-3)
 
-    ''' Tau'''
     dataset_path = "/scratch/leuven/374/vsc37415/EVE/train"  # dataset path
     label_excel = "/scratch/leuven/374/vsc37415/EVE/train"  # label path
     validation_dataset_path = "/scratch/leuven/374/vsc37415/EVE/val"
-    '''Tau'''
 
     for _ in range(1):
         wandb.init(
@@ -350,10 +333,10 @@ def train():
                 "lr": 1e-4,
                 "weight_decay": 5e-6,  
                 "num_workers": 6,
-                "dropout": 0.167,  
+                # "dropout": 0.167,  
                 "sequence_length": 30,
-                "train_max_steps_per_folder": 10,
-                "val_max_steps_per_folder": 10,
+                "train_max_steps_per_folder": float('inf'),
+                "val_max_steps_per_folder": float('inf'),
                 "warmup_steps_ratio": 0.0,
                 "warmup_start_lr": 1e-7
             },
@@ -386,20 +369,23 @@ def train():
         steps_per_epoch = len(train_dl)
         total_steps = steps_per_epoch * config.epochs
         
-        # we dont use warmup
+        # warmup parameters
         warmup_steps = int(total_steps * config.warmup_steps_ratio)
         warmup_start_lr = config.warmup_start_lr
         
         logger.info(f"Total training steps: {total_steps}, Warmup steps: {warmup_steps}")
 
+        #loss func
         loss_func = AngularLoss()
 
+        #Optimizer
         optimizer = torch.optim.AdamW(
             model.parameters(), 
             lr=config.lr, 
             weight_decay=config.weight_decay
         )
         
+        # Use ReduceLROnPlateau
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, 
             mode='min',
@@ -409,12 +395,12 @@ def train():
             verbose=True
         )
         
-        # mixed precision training
+        # initialize mixed precision training  (useless)
         scaler = torch.amp.GradScaler('cuda')
 
-        # Initialize counters for tracking progress (avoid truncation)
+        # Initialize counters for tracking progress
         global_step = 0
-        global_chunk_step = 0  # New counter for individual chunks 
+        global_chunk_step = 0  # New counter for individual chunks
         example_ct = 0
         best_val_loss = float('inf')
         
@@ -423,10 +409,8 @@ def train():
         epoch_val_losses = []
         
         # Directory for best model
-        best_model_dir = "/scratch/leuven/374/vsc37415/models_v100"
+        best_model_dir = "/scratch/leuven/374/vsc37415/models_a100"
         os.makedirs(best_model_dir, exist_ok=True)
-
-
 
 
         for epoch in range(config.epochs):
@@ -442,7 +426,7 @@ def train():
             
             for batch_idx, batch_data in enumerate(train_dl):
                 try:
-                    # Get batch data
+                    # get batch data
                     left_eyes = batch_data['left_eye'].to(device, non_blocking=True)
                     right_eyes = batch_data['right_eye'].to(device, non_blocking=True)
                     faces = batch_data['face'].to(device, non_blocking=True)
@@ -452,12 +436,12 @@ def train():
                     sequence_len = left_eyes.shape[1]
                     batch_size = left_eyes.size(0)
                     
-                    # Clear gradients
+                    # clear gradients
                     optimizer.zero_grad()
                     batch_loss = 0.0
                     num_chunks = 0
                     
-                    # Process each 5-frame chunk
+                    # train on chunks
                     for t in range(0, sequence_len, chunk_size):
                         chunk_idx = t // chunk_size
                         left_chunk = left_eyes[:, t:t+chunk_size]
@@ -466,11 +450,10 @@ def train():
                         label_chunk = labels[:, t:t+chunk_size]
                         valid_chunk = labels_validity[:, t:t+chunk_size]
                         
-                        # Use mixed precision training
+                        # Use mixed precision training (Useless)
                         with torch.amp.autocast('cuda'):
                             outputs, hidden = model(left_chunk, right_chunk, face_chunk, hidden)
                             
-                            # Prepare reference dictionary
                             reference_dict = {
                                 'gaze': label_chunk,
                                 'gaze_validity': valid_chunk
@@ -484,7 +467,7 @@ def train():
                             chunk_progress = chunk_idx / (sequence_len // chunk_size) / steps_per_epoch
                             current_progress = epoch + batch_progress + chunk_progress
                             
-                            # Log metrics for this chunk  (for traning curve. The epoch wise train and val loss are logged based on 30 frames)
+                            # Log metrics for this chunk
                             metrics = {
                                 "train/chunk_loss": chunk_loss.item(),
                                 "train/chunk_idx": chunk_idx,
@@ -504,21 +487,20 @@ def train():
                             if batch_idx % 50 == 0:
                                 logger.info(f"[Train Epoch {epoch+1} | Batch {batch_idx}/{steps_per_epoch}] Chunk {chunk_idx+1}: Frames {t} to {min(t+chunk_size, sequence_len) - 1}, Loss = {chunk_loss.item():.4f}")
                         
-                    # Normalize the batch loss
+                    # normalize the batch loss
                     batch_loss = batch_loss / num_chunks if num_chunks > 0 else 0
-                    
-                    # Backward pass
+
                     scaler.scale(batch_loss).backward()
                     
-                    # Gradient clipping
+                    # gradient clipping
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                     
-                    # Update parameters
+                    # update weights
                     scaler.step(optimizer)
                     scaler.update()
 
-                    # Update statistics
+                    # update statistics
                     samples_count += batch_size
                     epoch_loss += batch_loss.item() * batch_size
                     example_ct += batch_size
@@ -532,11 +514,11 @@ def train():
                     salvage_memory()
                     continue
             
-            # Calculate average training loss for the epoch
+            # calculate avg training loss for the epoch
             avg_train_loss = epoch_loss / samples_count if samples_count > 0 else 0
             epoch_train_losses.append(avg_train_loss)
             
-            # Validate model and use global_chunk_step for consistent wandb logging
+            # validate model and use global_chunk_step for consistent wandb logging
             val_loss = validate_sequence_model(model, valid_dl, loss_func, global_chunk_step)
             epoch_val_losses.append(val_loss)
 
@@ -547,7 +529,7 @@ def train():
             # Get current learning rate
             current_lr = optimizer.param_groups[0]['lr']
             
-            # Record metrics for each epoch (30 frames)
+            # upload metrics for each epoch to WandB
             epoch_metrics = {
                 "epoch/avg_train_loss": avg_train_loss,
                 "epoch/avg_val_loss": val_loss,
@@ -556,17 +538,8 @@ def train():
             }
             wandb.log(epoch_metrics, step=global_chunk_step)
             
-            # # Create train_loss vs val_loss chart (can be removed)
-            # train_vs_val_loss = wandb.plot.line_series(
-            #     xs=[[i+1 for i in range(len(epoch_train_losses))], [i+1 for i in range(len(epoch_val_losses))]],
-            #     ys=[epoch_train_losses, epoch_val_losses],
-            #     keys=["Avg Train Loss", "Avg Val Loss"],
-            #     title="Average Train Loss vs Val Loss (across 5-frame chunks)",
-            #     xname="Epoch"
-            # )
-            # wandb.log({"train_vs_val_loss": train_vs_val_loss}, step=global_chunk_step)
 
-            # Record validation metrics
+            # upload validation metrics to wandb
             val_metrics = {
                 "val/avg_loss": val_loss,
                 "val/lr": current_lr
@@ -589,10 +562,10 @@ def train():
             # Record information for each epoch
             logger.info(f"Epoch: {epoch + 1}/{config.epochs} completed. Train Loss: {avg_train_loss:.4f}, Val Loss: {val_loss:.4f}, LR: {current_lr:.6f}")
             
-            # Free memory at the end of epoch
+            # Free memory at the end of epoch (GOOD)
             salvage_memory()
 
-        # Record final results (kind of useless?)
+        # Record final results (partially useless)
         wandb.summary["best_val_loss"] = best_val_loss
         wandb.summary["best_model_path"] = os.path.join(best_model_dir, "best_model.pt")
         wandb.summary["total_epochs_completed"] = len(epoch_train_losses)
