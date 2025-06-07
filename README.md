@@ -10,8 +10,8 @@ This project focuses on learning **reusable gaze representations** from video da
 
 Our model integrates:  
   - **ResNet as the backbone** for feature extraction  
-  - **Adaptive Group Normalization (AdaGN)** for multi-modal balance  
-  - **Attention Mechanisms** (Channel & Self-Attention) for feature refinement  
+  - **Group Normalization (GN)** for stable training  
+  - **Attention Mechanisms** (Self-Attention) for feature refinement  
   -  **Global Average Pooling (GAP)** to prevent overfitting  
   - **GRU (Gated Recurrent Units)** for capturing **temporal gaze dependencies**  
 
@@ -23,8 +23,8 @@ We use the **EVE Dataset** for training, which includes:
 
 ## 🏗️ Model Architecture  
   - **Feature Extraction (ResNet)**: Extracts spatial features from **eye, face, and screen data**.  
-  - **Feature Fusion & Normalization (AdaGN)**: Ensures balanced feature contributions.  
-  - **Attention Mechanisms (Channel & Self-Attention)**: Learns feature importance and spatial dependencies.  
+  - **Feature Fusion & Normalization (GN)**: Ensures balanced feature contributions.  
+  - **Attention Mechanisms (Self-Attention)**: Learns feature importance and spatial dependencies.  
   - **Global Average Pooling (GAP)**: Reduces dimensions to prevent overfitting.  
   - **GRU for Temporal Processing**: Captures gaze movement over time.  
   - **Fully Connected (FC) Layer**: Maps features to **(x, y) gaze coordinates**.  
